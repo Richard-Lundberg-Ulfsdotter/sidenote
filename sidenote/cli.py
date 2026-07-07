@@ -1,0 +1,172 @@
+"""Command line interface for sidenote.
+
+sidenote FILE                 open the TUI (.odt or .docx)
+sidenote list FILE            list comments
+sidenote add FILE ...         add a comment non-interactively
+sidenote export FILE          convert to docx via headless LibreOffice
+sidenote sample FILE          write a small sample ODT for testing
+
+A .docx argument is converted to a sibling .odt working copy first. An
+existing working copy is reused when it is newer than the docx.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from sidenote.engine import OdtReview, docx_to_odt
+
+SUBCOMMANDS = ("view", "list", "add", "export", "sample")
+
+
+def make_sample(path: Path) -> None:
+    from odf.opendocument import OpenDocumentText
+    from odf.style import Style, TextProperties
+    from odf.text import H, P
+
+    doc = OpenDocumentText()
+    bold = Style(name="Bold", family="text")
+    bold.addElement(TextProperties(fontweight="bold"))
+    doc.automaticstyles.addElement(bold)
+
+    doc.text.addElement(H(outlinelevel=1, text="Sample manuscript"))
+    doc.text.addElement(
+        P(
+            text=(
+                "Maternal folate intake during pregnancy has been linked to "
+                "offspring neurodevelopment in several cohort studies. The "
+                "evidence for dose-response relations remains inconsistent."
+            )
+        )
+    )
+    doc.text.addElement(
+        P(
+            text=(
+                "We used data from the NorthPop birth cohort to examine "
+                "self-reported folate intake in gestational week 20 and "
+                "language development at 18 months."
+            )
+        )
+    )
+    doc.text.addElement(
+        P(
+            text=(
+                "Intake was categorised in tertiles. Models were adjusted "
+                "for maternal age, education, pre-pregnancy BMI, and "
+                "smoking during pregnancy."
+            )
+        )
+    )
+    doc.text.addElement(
+        P(
+            text=(
+                "The middle tertile showed no association. The highest "
+                "tertile showed a weak positive association that did not "
+                "survive adjustment for education."
+            )
+        )
+    )
+    doc.save(str(path))
+
+
+def cmd_list(review: OdtReview) -> None:
+    texts = review.para_texts()
+    comments = review.comments()
+    if not comments:
+        print("no comments")
+        return
+    for i, c in enumerate(comments, 1):
+        sp, so = c.start
+        ep, eo = c.end
+        if c.end > c.start:
+            anchor = (
+                texts[sp][so:eo] if sp == ep else texts[sp][so:] + " [...]"
+            )
+            where = f"para {sp} [{so}-{eo}]" if sp == ep else f"para {sp}:{so} - para {ep}:{eo}"
+        else:
+            anchor = ""
+            where = f"para {sp} @{so}"
+        print(f"[{i}] {c.author} {c.date} ({where})")
+        if anchor:
+            print(f"    anchor: {anchor!r}")
+        print(f"    {c.text}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    # bare file argument opens the TUI
+    if argv and argv[0] not in SUBCOMMANDS and not argv[0].startswith("-"):
+        argv.insert(0, "view")
+
+    parser = argparse.ArgumentParser(prog="sidenote", description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_view = sub.add_parser("view", help="open the TUI")
+    p_view.add_argument("file", type=Path)
+    p_view.add_argument("--author", help="comment author name")
+
+    p_list = sub.add_parser("list", help="list comments")
+    p_list.add_argument("file", type=Path)
+
+    p_add = sub.add_parser("add", help="add a comment")
+    p_add.add_argument("file", type=Path)
+    p_add.add_argument("--para", type=int, required=True)
+    p_add.add_argument("--start", type=int, required=True)
+    p_add.add_argument("--end", type=int, help="end offset, exclusive (defaults to a point comment)")
+    p_add.add_argument("--end-para", type=int, help="end paragraph if different from --para")
+    p_add.add_argument("--text", required=True)
+    p_add.add_argument("--author")
+
+    p_export = sub.add_parser("export", help="convert to docx")
+    p_export.add_argument("file", type=Path)
+    p_export.add_argument("--outdir", type=Path)
+
+    p_sample = sub.add_parser("sample", help="write a sample ODT")
+    p_sample.add_argument("file", type=Path)
+
+    args = parser.parse_args(argv)
+
+    if args.command == "sample":
+        make_sample(args.file)
+        print(f"wrote {args.file}")
+        return 0
+
+    if not args.file.exists():
+        print(f"file not found: {args.file}", file=sys.stderr)
+        return 1
+
+    if args.file.suffix.lower() == ".docx":
+        odt = docx_to_odt(args.file)
+        print(f"working copy {odt}")
+        args.file = odt
+
+    if args.command == "view":
+        from sidenote.tui import ReviewApp
+
+        ReviewApp(args.file, author=args.author).run()
+        return 0
+
+    review = OdtReview(args.file)
+
+    if args.command == "list":
+        cmd_list(review)
+    elif args.command == "add":
+        end_para = args.end_para if args.end_para is not None else args.para
+        end_off = args.end if args.end is not None else args.start
+        c = review.add_comment(
+            (args.para, args.start), (end_para, end_off), args.text, args.author
+        )
+        review.save()
+        kind = "ranged" if c.end > c.start else "point"
+        print(f"added {kind} comment by {c.author}")
+    elif args.command == "export":
+        target = review.export_docx(args.outdir)
+        print(f"wrote {target}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

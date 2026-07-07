@@ -1,0 +1,959 @@
+"""Textual TUI for reviewing ODT documents.
+
+Vim-style navigation over a read-only rendering of the document, with a
+character-level visual mode for selecting the span a comment anchors to.
+
+Performance model. The wrap layout (display line -> paragraph slice) is
+computed once per resize or document change and cached in
+ReviewApp.lines. The document pane is a line-API ScrollView that styles
+and paints only the visible lines each frame, so keystrokes cost
+O(viewport), not O(document).
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+from rich.markup import escape
+from rich.segment import Segment
+from rich.text import Text as RichText
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.geometry import Size
+from textual.screen import ModalScreen
+from textual.scroll_view import ScrollView
+from textual.strip import Strip
+from textual.widgets import Footer, Input, Label, ListItem, ListView, Static, TextArea
+
+from sidenote.engine import Comment, OdtReview, Pos
+
+WORD_RE = re.compile(r"[\wÀ-ɏ]+")
+
+STYLE_COMMENT = "underline yellow"
+STYLE_SEARCH = "black on green"
+STYLE_SEARCH_CURRENT = "black on orange1"
+STYLE_SELECTION = "reverse"
+STYLE_CURSOR = "black on bright_yellow"
+
+HELP_TEXT = """\
+[b]Movement[/b]
+  j k h l        line down/up, char left/right
+  w b e          word start forward/back, word end
+  0 $            start/end of display line
+  { }            previous/next paragraph
+  gg G           first/last paragraph
+  ctrl+d ctrl+u  half page down/up
+  ctrl+e ctrl+y  scroll view one line
+  zz zt zb       cursor line to center/top/bottom
+
+[b]Comments[/b]
+  v              visual mode (character-level selection)
+  c              comment on selection, or point note at cursor
+  m              edit comment under cursor
+  d              delete comment under cursor
+  ] \\[            jump to next/previous comment
+  t              open and focus comments sidebar / close it
+
+[b]Sidebar (when focused)[/b]
+  j k g G        move selection, first/last
+  enter          jump to the comment in the document
+  m d            edit/delete the selected comment
+  /              filter comments by author or text
+  n N            next/previous comment (wraps)
+  * #            filter to selected comment's author, step through
+  escape         clear the filter, then back to document
+  tab            back to the document
+
+[b]Search[/b]
+  /              search (smartcase)
+  n N            next/previous match (wraps, count in status bar)
+  * #            search word under cursor forward/backward
+
+[b]Other[/b]
+  X              export to docx
+  escape         leave visual mode / clear search
+  q              quit
+
+Comments save to the ODT immediately. In the comment box,
+enter inserts a newline, ctrl+s saves, escape cancels.
+This help scrolls with j/k, escape or q closes it.\
+"""
+
+
+@dataclass
+class Line:
+    """One display line. Maps back to a slice of a source paragraph."""
+
+    para: int
+    start: int
+    end: int
+
+
+def wrap_offsets(text: str, width: int) -> list[tuple[int, int]]:
+    """Greedy word wrap. Returns (start, end) slices into text."""
+    width = max(width, 8)
+    spans: list[tuple[int, int]] = []
+    for seg_start, seg_text in _split_hard_lines(text):
+        pos = 0
+        while True:
+            remaining = seg_text[pos:]
+            if len(remaining) <= width:
+                spans.append((seg_start + pos, seg_start + len(seg_text)))
+                break
+            cut = remaining.rfind(" ", 1, width + 1)
+            cut = cut + 1 if cut > 0 else width
+            spans.append((seg_start + pos, seg_start + pos + cut))
+            pos += cut
+    return spans or [(0, 0)]
+
+
+def _split_hard_lines(text: str) -> list[tuple[int, str]]:
+    out = []
+    start = 0
+    for part in text.split("\n"):
+        out.append((start, part))
+        start += len(part) + 1
+    return out
+
+
+class CommentInput(ModalScreen[str | None]):
+    """Multi-line comment editor. ctrl+s submits, escape cancels."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "cancel"),
+        Binding("ctrl+s", "submit", "save"),
+    ]
+
+    def __init__(self, anchor_preview: str, initial: str = ""):
+        super().__init__()
+        self.anchor_preview = anchor_preview
+        self.initial = initial
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="comment-dialog"):
+            yield Static(
+                f"[b]Comment on[/b]\n{escape(self.anchor_preview)}",
+                id="comment-anchor",
+            )
+            yield TextArea(self.initial, id="comment-text")
+            yield Label("[dim]ctrl+s save · escape cancel[/dim]")
+
+    def on_mount(self) -> None:
+        area = self.query_one(TextArea)
+        area.focus()
+        area.move_cursor(area.document.end)
+
+    def action_submit(self) -> None:
+        self.dismiss(self.query_one(TextArea).text.strip() or None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class SearchInput(ModalScreen[str | None]):
+    """Search prompt. Enter submits, escape cancels."""
+
+    BINDINGS = [Binding("escape", "cancel", "cancel")]
+
+    def __init__(self, placeholder: str = "search"):
+        super().__init__()
+        self.placeholder = placeholder
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="search-dialog"):
+            yield Input(placeholder=self.placeholder, id="search-text")
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value or None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class HelpScreen(ModalScreen[None]):
+    """Key reference. Scrolls with j/k, escape or q closes."""
+
+    BINDINGS = [
+        Binding("escape", "close", "close"),
+        Binding("q", "close", show=False),
+        Binding("question_mark", "close", show=False),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="help-dialog"):
+            yield Static(HELP_TEXT)
+
+    def on_mount(self) -> None:
+        self.query_one(VerticalScroll).focus()
+
+    def on_key(self, event) -> None:
+        scroll = self.query_one(VerticalScroll)
+        if event.character == "j":
+            scroll.scroll_to(y=int(scroll.scroll_offset.y) + 1, animate=False)
+            event.stop()
+        elif event.character == "k":
+            scroll.scroll_to(y=int(scroll.scroll_offset.y) - 1, animate=False)
+            event.stop()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
+class CommentsList(ListView):
+    """Sidebar list of comments with vim-style selection keys."""
+
+    BINDINGS = [
+        Binding("j", "cursor_down", show=False),
+        Binding("k", "cursor_up", show=False),
+        Binding("g", "first", show=False),
+        Binding("G", "last", show=False),
+    ]
+
+    def action_first(self) -> None:
+        if len(self):
+            self.index = 0
+
+    def action_last(self) -> None:
+        if len(self):
+            self.index = len(self) - 1
+
+
+class DocumentView(ScrollView):
+    """Line-API document pane. Paints only the visible lines."""
+
+    can_focus = True
+
+    def on_resize(self) -> None:
+        self.app.rebuild_lines()
+
+    def render_line(self, y: int) -> Strip:
+        app = self.app
+        base = self.rich_style
+        row = y + int(self.scroll_offset.y)
+        if row >= len(app.lines) or app.lines[row] is None:
+            return Strip.blank(self.size.width, base)
+        text = app.render_doc_line(row)
+        text.stylize_before(base)
+        segments = [Segment(" ", base), *text.render(app.console, end="")]
+        return Strip(segments).adjust_cell_length(self.size.width, base)
+
+
+class ReviewApp(App):
+    """sidenote. Vim keys, v selects, c comments, X exports docx."""
+
+    TITLE = "sidenote"
+
+    CSS = """
+    DocumentView { width: 3fr; }
+    #sidebar { width: 44; border: round $primary; padding: 0 1; display: none; }
+    #sidebar.visible { display: block; }
+    #sidebar ListItem { height: auto; padding: 0 1; }
+    #statusbar { dock: top; height: 1; background: $primary-background; padding: 0 1; }
+    CommentInput, SearchInput, HelpScreen { align: center middle; }
+    #comment-dialog {
+        width: 80%; max-width: 120; height: auto; max-height: 90%;
+        border: thick $primary; background: $surface; padding: 1 2;
+    }
+    #comment-text { height: 12; margin: 1 0; }
+    #comment-anchor { color: $text-muted; max-height: 10; }
+    #search-dialog {
+        width: 50; height: auto;
+        border: thick $primary; background: $surface; padding: 1 2;
+    }
+    #help-dialog {
+        width: 60; height: auto; max-height: 90%;
+        border: thick $primary; background: $surface; padding: 1 2;
+    }
+    """
+
+    BINDINGS = [
+        Binding("q", "quit", "quit"),
+        Binding("v", "visual", "visual"),
+        Binding("c", "comment", "comment"),
+        Binding("m", "edit_comment", "edit"),
+        Binding("d", "delete_comment", "delete"),
+        Binding("slash", "search", "search"),
+        Binding("t", "toggle_sidebar", "comments"),
+        Binding("X", "export", "docx"),
+        Binding("question_mark", "help", "help"),
+        Binding("escape", "clear_transient", show=False),
+    ]
+
+    def __init__(self, path: str | Path, author: str | None = None):
+        super().__init__()
+        self.path = Path(path)
+        self.author = author
+        self.review = OdtReview(self.path)
+        self.texts: list[str] = self.review.para_texts()
+        self.comment_list: list[Comment] = self.review.comments()
+        self.cur: Pos = (0, 0)
+        self.anchor: Pos | None = None
+        self.goal_col = 0
+        self.pending_g = False
+        self.pending_z = False
+        self.lines: list[Line | None] = []
+        self._para_line_start: list[int] = []
+        self.search_query = ""
+        self.search_matches: list[Pos] = []
+        self.sidebar_filter = ""
+        self._sidebar_indices: list[int] = []
+
+    # ------------------------------------------------------------------
+    # Layout
+    # ------------------------------------------------------------------
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="statusbar")
+        with Horizontal():
+            yield DocumentView(id="doc")
+            yield CommentsList(id="sidebar")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.doc_view = self.query_one("#doc", DocumentView)
+        self.status_widget = self.query_one("#statusbar", Static)
+        self.sidebar = self.query_one("#sidebar", CommentsList)
+        self.sidebar.border_title = "comments"
+        self.doc_view.focus()
+        self.rebuild_lines()
+        self._update_sidebar()
+
+    # ------------------------------------------------------------------
+    # Wrap cache and rendering
+    # ------------------------------------------------------------------
+
+    def _wrap_width(self) -> int:
+        width = self.doc_view.scrollable_content_region.width or 80
+        # one column of left padding, one of right slack
+        return max(width - 2, 20)
+
+    def rebuild_lines(self) -> None:
+        """Recompute the wrap layout. Only needed on resize or reload."""
+        width = self._wrap_width()
+        self.lines = []
+        self._para_line_start = []
+        for i, text in enumerate(self.texts):
+            self._para_line_start.append(len(self.lines))
+            # render an empty paragraph as one space so the cursor shows
+            render_text = text if text else " "
+            for start, end in wrap_offsets(render_text, width):
+                self.lines.append(Line(i, start, end))
+            self.lines.append(None)
+        self.doc_view.virtual_size = Size(width, len(self.lines))
+        self._repaint()
+
+    def _repaint(self) -> None:
+        """Per-keystroke refresh. Repaints visible lines only."""
+        self._update_statusbar()
+        self._scroll_cursor_into_view()
+        self.doc_view.refresh()
+
+    def render_doc_line(self, row: int) -> RichText:
+        """Styled text for one display line, called for visible rows."""
+        line = self.lines[row]
+        text = self.texts[line.para] or " "
+        out = RichText(
+            text[line.start:line.end].replace("\t", " "), no_wrap=True
+        )
+        for lo, hi, style in self._para_styles(line.para):
+            lo2, hi2 = max(lo, line.start), min(hi, line.end)
+            if lo2 < hi2:
+                out.stylize(style, lo2 - line.start, hi2 - line.start)
+        return out
+
+    def _selection(self) -> tuple[Pos, Pos] | None:
+        """Current selection as engine positions, end exclusive."""
+        if self.anchor is None:
+            return None
+        a, b = sorted([self.anchor, self.cur])
+        return a, (b[0], min(b[1] + 1, len(self.texts[b[0]])))
+
+    def _para_styles(self, para: int) -> list[tuple[int, int, str]]:
+        """Style ranges over one paragraph's text, cursor applied last."""
+        n = len(self.texts[para])
+        ranges: list[tuple[int, int, str]] = []
+        for c in self.comment_list:
+            s, e = c.start, max(c.end, (c.start[0], c.start[1] + 1))
+            if s[0] <= para <= e[0]:
+                lo = s[1] if s[0] == para else 0
+                hi = e[1] if e[0] == para else n
+                ranges.append((lo, min(hi, n), STYLE_COMMENT))
+        if self.search_query:
+            qlen = len(self.search_query)
+            for mp, mo in self.search_matches:
+                if mp == para:
+                    style = (
+                        STYLE_SEARCH_CURRENT
+                        if (mp, mo) == self.cur
+                        else STYLE_SEARCH
+                    )
+                    ranges.append((mo, min(mo + qlen, n), style))
+        sel = self._selection()
+        if sel:
+            s, e = sel
+            if s[0] <= para <= e[0]:
+                lo = s[1] if s[0] == para else 0
+                hi = e[1] if e[0] == para else n
+                ranges.append((lo, min(hi, n), STYLE_SELECTION))
+        if self.cur[0] == para:
+            ranges.append((self.cur[1], self.cur[1] + 1, STYLE_CURSOR))
+        return ranges
+
+    def _update_statusbar(self) -> None:
+        mode = "VISUAL" if self.anchor is not None else "NORMAL"
+        p, o = self.cur
+        search = ""
+        if self.search_query:
+            at = [
+                i
+                for i, m in enumerate(self.search_matches, 1)
+                if m == self.cur
+            ]
+            pos = at[0] if at else "-"
+            search = (
+                f" · /{escape(self.search_query)} "
+                f"{pos}/{len(self.search_matches)}"
+            )
+        self.status_widget.update(
+            f"[b]{escape(self.path.name)}[/b] · {mode} · "
+            f"para {p + 1}/{len(self.texts)} char {o} · "
+            f"comments {len(self.comment_list)}{search}"
+        )
+
+    @staticmethod
+    def _matches_filter(c: Comment, needle: str) -> bool:
+        return needle in (c.author or "").lower() or needle in c.text.lower()
+
+    def _update_sidebar(self, keep_index: int | None = None) -> None:
+        needle = self.sidebar_filter.lower()
+        self._sidebar_indices = [
+            i
+            for i, c in enumerate(self.comment_list)
+            if not needle or self._matches_filter(c, needle)
+        ]
+        items: list[ListItem] = []
+        for i in self._sidebar_indices:
+            c = self.comment_list[i]
+            sp, so = c.start
+            ep, eo = c.end
+            if c.end > c.start:
+                anchor = (
+                    self.texts[sp][so:eo]
+                    if sp == ep
+                    else self.texts[sp][so:so + 30] + " [...]"
+                )
+                anchor = anchor if len(anchor) <= 40 else anchor[:37] + "..."
+                head = f"[b]{i + 1}.[/b] [yellow]{escape(anchor)}[/yellow]"
+            else:
+                head = f"[b]{i + 1}.[/b] [dim]para {sp + 1} note[/dim]"
+            date = c.date[:10] if c.date else ""
+            items.append(
+                ListItem(
+                    Static(
+                        f"{head}\n[dim]{escape(c.author)} {date}[/dim]\n"
+                        f"{escape(c.text)}"
+                    )
+                )
+            )
+        if needle:
+            self.sidebar.border_title = (
+                f"comments · {escape(self.sidebar_filter)} "
+                f"({len(items)}/{len(self.comment_list)})"
+            )
+        else:
+            self.sidebar.border_title = "comments"
+        self.sidebar.clear()
+        if items:
+            self.sidebar.extend(items)
+            index = min(keep_index or 0, len(items) - 1)
+            self.call_after_refresh(self._set_sidebar_index, index)
+        elif self.focused is self.sidebar and not needle:
+            self.doc_view.focus()
+
+    def _set_sidebar_index(self, index: int) -> None:
+        if len(self.sidebar):
+            self.sidebar.index = min(index, len(self.sidebar) - 1)
+
+    def _sync_sidebar_index(self) -> None:
+        """Point the sidebar selection at the comment at or after the cursor."""
+        if not self._sidebar_indices:
+            return
+        after = [
+            pos
+            for pos, i in enumerate(self._sidebar_indices)
+            if self.comment_list[i].start >= self.cur
+        ]
+        self.call_after_refresh(self._set_sidebar_index, after[0] if after else 0)
+
+    def _sidebar_comment(self) -> Comment | None:
+        """Comment behind the current sidebar selection, filter-aware."""
+        idx = self.sidebar.index
+        if idx is None or idx >= len(self._sidebar_indices):
+            return None
+        return self.comment_list[self._sidebar_indices[idx]]
+
+    def _cursor_line(self) -> int:
+        """Display line of the cursor. Scans only the cursor's paragraph."""
+        p, o = self.cur
+        idx = self._para_line_start[p] if p < len(self._para_line_start) else 0
+        for j in range(idx, len(self.lines)):
+            line = self.lines[j]
+            if line is None or line.para != p:
+                break
+            idx = j
+            if line.start <= o < max(line.end, line.start + 1):
+                return j
+        return idx
+
+    def _scroll_cursor_into_view(self) -> None:
+        y = self._cursor_line()
+        top = int(self.doc_view.scroll_offset.y)
+        height = self.doc_view.size.height or 24
+        if y < top:
+            self.doc_view.scroll_to(y=y, animate=False)
+        elif y >= top + height:
+            self.doc_view.scroll_to(y=y - height + 1, animate=False)
+
+    # ------------------------------------------------------------------
+    # Movement
+    # ------------------------------------------------------------------
+
+    def _para_len(self, i: int) -> int:
+        return len(self.texts[i])
+
+    def _max_off(self, i: int) -> int:
+        return max(self._para_len(i) - 1, 0)
+
+    def _move_horizontal(self, delta: int) -> None:
+        p, o = self.cur
+        o += delta
+        while o < 0:
+            if p == 0:
+                o = 0
+                break
+            p -= 1
+            o += self._max_off(p) + 1
+        while o > self._max_off(p):
+            if p == len(self.texts) - 1:
+                o = self._max_off(p)
+                break
+            o -= self._max_off(p) + 1
+            p += 1
+        self.cur = (p, o)
+        self.goal_col = self._col_in_line()
+
+    def _col_in_line(self) -> int:
+        line = self.lines[self._cursor_line()]
+        return self.cur[1] - line.start if line else 0
+
+    def _move_vertical(self, delta: int) -> None:
+        idx = self._cursor_line()
+        step = 1 if delta > 0 else -1
+        for _ in range(abs(delta)):
+            j = idx + step
+            while 0 <= j < len(self.lines) and self.lines[j] is None:
+                j += step
+            if not 0 <= j < len(self.lines):
+                break
+            idx = j
+        line = self.lines[idx]
+        if line is None:
+            return
+        span = max(line.end - line.start - 1, 0)
+        self.cur = (line.para, line.start + min(self.goal_col, span))
+
+    def _word_jump(self, forward: bool) -> None:
+        p, o = self.cur
+        if forward:
+            for i in range(p, len(self.texts)):
+                min_start = o + 1 if i == p else 0
+                for w in WORD_RE.finditer(self.texts[i]):
+                    if w.start() >= min_start:
+                        self.cur = (i, w.start())
+                        return
+        else:
+            for i in range(p, -1, -1):
+                limit = o if i == p else self._para_len(i) + 1
+                m = [w for w in WORD_RE.finditer(self.texts[i]) if w.start() < limit]
+                if m:
+                    self.cur = (i, m[-1].start())
+                    return
+
+    def _word_end_jump(self) -> None:
+        p, o = self.cur
+        for i in range(p, len(self.texts)):
+            for w in WORD_RE.finditer(self.texts[i]):
+                last = w.end() - 1
+                if i > p or last > o:
+                    self.cur = (i, last)
+                    return
+
+    def _para_jump(self, forward: bool) -> None:
+        p, o = self.cur
+        if forward:
+            self.cur = (min(p + 1, len(self.texts) - 1), 0)
+        else:
+            self.cur = (p, 0) if o > 0 else (max(p - 1, 0), 0)
+        self.goal_col = 0
+
+    def _jump_to(self, positions: list[Pos], forward: bool) -> None:
+        """Move to the nearest position in the given direction, wrapping."""
+        if not positions:
+            return
+        positions = sorted(positions)
+        if forward:
+            nxt = [s for s in positions if s > self.cur]
+            self.cur = nxt[0] if nxt else positions[0]
+        else:
+            prev = [s for s in positions if s < self.cur]
+            self.cur = prev[-1] if prev else positions[-1]
+        self.cur = (self.cur[0], min(self.cur[1], self._max_off(self.cur[0])))
+
+    def _sidebar_key(self, event) -> None:
+        """Search-style navigation inside the sidebar list.
+
+        n/N cycle through the (filtered) comments with wraparound, and
+        */# filter to the selected comment's author and move to that
+        author's next/previous comment. Other keys fall through to the
+        ListView bindings (j, k, g, G, enter).
+        """
+        ch = event.character
+        count = len(self.sidebar)
+        if count == 0 or ch not in ("n", "N", "*", "#"):
+            return
+        idx = self.sidebar.index or 0
+        if ch == "n":
+            self.sidebar.index = (idx + 1) % count
+        elif ch == "N":
+            self.sidebar.index = (idx - 1) % count
+        else:
+            target = self._sidebar_comment()
+            if target is None or not target.author:
+                self.notify("no author on selected comment", severity="warning")
+                return
+            needle = target.author.lower()
+            filtered = [
+                i
+                for i, c in enumerate(self.comment_list)
+                if self._matches_filter(c, needle)
+            ]
+            pos = filtered.index(self._sidebar_indices[idx])
+            step = 1 if ch == "*" else -1
+            self.sidebar_filter = target.author
+            self._update_sidebar(keep_index=(pos + step) % len(filtered))
+        event.stop()
+
+    def _search_word_under_cursor(self, forward: bool) -> None:
+        """Vim * and #. Whole-word search for the word at the cursor."""
+        p, o = self.cur
+        word = None
+        for m in WORD_RE.finditer(self.texts[p]):
+            if m.start() <= o < m.end():
+                word = m.group()
+                break
+        if word is None:
+            self.notify("no word under cursor", severity="warning")
+            return
+        self.search_query = word
+        pattern = re.compile(
+            rf"(?<![\wÀ-ɏ]){re.escape(word)}(?![\wÀ-ɏ])"
+        )
+        self.search_matches = [
+            (i, m.start())
+            for i, t in enumerate(self.texts)
+            for m in pattern.finditer(t)
+        ]
+        self._jump_to(self.search_matches, forward=forward)
+
+    def _scroll_view(self, delta: int) -> None:
+        self.doc_view.scroll_to(
+            y=int(self.doc_view.scroll_offset.y) + delta, animate=False
+        )
+
+    def on_key(self, event) -> None:
+        if len(self.screen_stack) > 1:
+            return
+        if self.focused is self.sidebar:
+            self._sidebar_key(event)
+            return
+        if self.focused is not self.doc_view:
+            return
+        key = event.key
+        ch = event.character
+        if self.pending_g:
+            self.pending_g = False
+            if ch == "g":
+                self.cur = (0, 0)
+                self.goal_col = 0
+                self._repaint()
+                event.stop()
+            return
+        if self.pending_z:
+            self.pending_z = False
+            height = self.doc_view.size.height or 24
+            y = self._cursor_line()
+            targets = {"z": y - height // 2, "t": y, "b": y - height + 1}
+            if ch in targets:
+                self.doc_view.scroll_to(y=max(targets[ch], 0), animate=False)
+                event.stop()
+            return
+        if key == "ctrl+e":
+            self._scroll_view(1)
+            event.stop()
+            return
+        elif key == "ctrl+y":
+            self._scroll_view(-1)
+            event.stop()
+            return
+        half_page = max((self.doc_view.size.height or 24) // 2, 1)
+        if ch == "j" or key == "down":
+            self._move_vertical(1)
+        elif ch == "k" or key == "up":
+            self._move_vertical(-1)
+        elif ch == "l" or key == "right":
+            self._move_horizontal(1)
+        elif ch == "h" or key == "left":
+            self._move_horizontal(-1)
+        elif ch == "w":
+            self._word_jump(forward=True)
+        elif ch == "b":
+            self._word_jump(forward=False)
+        elif ch == "e":
+            self._word_end_jump()
+        elif ch == "0":
+            line = self.lines[self._cursor_line()]
+            if line:
+                self.cur = (line.para, line.start)
+                self.goal_col = 0
+        elif ch == "$":
+            line = self.lines[self._cursor_line()]
+            if line:
+                self.cur = (line.para, max(line.end - 1, line.start))
+                self.goal_col = self._para_len(line.para)
+        elif ch == "{":
+            self._para_jump(forward=False)
+        elif ch == "}":
+            self._para_jump(forward=True)
+        elif ch == "g":
+            self.pending_g = True
+            event.stop()
+            return
+        elif ch == "z":
+            self.pending_z = True
+            event.stop()
+            return
+        elif ch == "G":
+            self.cur = (len(self.texts) - 1, 0)
+            self.goal_col = 0
+        elif key == "ctrl+d":
+            self._move_vertical(half_page)
+        elif key == "ctrl+u":
+            self._move_vertical(-half_page)
+        elif ch == "]":
+            self._jump_to([c.start for c in self.comment_list], forward=True)
+        elif ch == "[":
+            self._jump_to([c.start for c in self.comment_list], forward=False)
+        elif ch == "n":
+            self._jump_to(self.search_matches, forward=True)
+        elif ch == "N":
+            self._jump_to(self.search_matches, forward=False)
+        elif ch == "*":
+            self._search_word_under_cursor(forward=True)
+        elif ch == "#":
+            self._search_word_under_cursor(forward=False)
+        else:
+            return
+        self._repaint()
+        event.stop()
+
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+
+    def action_visual(self) -> None:
+        self.anchor = None if self.anchor is not None else self.cur
+        self._repaint()
+
+    def action_clear_transient(self) -> None:
+        if self.focused is self.sidebar:
+            if self.sidebar_filter:
+                self.sidebar_filter = ""
+                self._update_sidebar()
+            else:
+                self.doc_view.focus()
+            return
+        if self.anchor is not None:
+            self.anchor = None
+        elif self.search_query:
+            self.search_query = ""
+            self.search_matches = []
+        else:
+            return
+        self._repaint()
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Enter in the sidebar jumps to the comment's anchor."""
+        target = self._sidebar_comment()
+        if target is None:
+            return
+        start = target.start
+        self.cur = (start[0], min(start[1], self._max_off(start[0])))
+        self.goal_col = 0
+        self.doc_view.focus()
+        self._repaint()
+
+    def _comments_at_cursor(self) -> list[Comment]:
+        return [
+            c
+            for c in self.comment_list
+            if c.start <= self.cur < c.end or c.start == self.cur
+        ]
+
+    def _target_comment(self) -> Comment | None:
+        """Comment to act on. Sidebar selection when focused, else cursor."""
+        if self.focused is self.sidebar:
+            return self._sidebar_comment()
+        here = self._comments_at_cursor()
+        return here[0] if here else None
+
+    def _anchor_preview(self, start: Pos, end: Pos) -> str:
+        """Full selected text for the comment dialog, capped for huge spans."""
+        sp, so = start
+        ep, eo = end
+        if end <= start:
+            return f"(note at paragraph {sp + 1})"
+        if sp == ep:
+            text = self.texts[sp][so:eo]
+        else:
+            parts = [self.texts[sp][so:]]
+            parts.extend(self.texts[i] for i in range(sp + 1, ep))
+            parts.append(self.texts[ep][:eo])
+            text = "\n".join(parts)
+        return text if len(text) <= 600 else text[:600] + " […]"
+
+    def _after_mutation(self, message: str) -> None:
+        keep = self.sidebar.index if self.focused is self.sidebar else None
+        self.review = OdtReview(self.path)
+        self.texts = self.review.para_texts()
+        self.comment_list = self.review.comments()
+        self.rebuild_lines()
+        self._update_sidebar(keep_index=keep)
+        self.notify(message)
+
+    def action_comment(self) -> None:
+        sel = self._selection()
+        start, end = sel if sel else (self.cur, self.cur)
+        preview = self._anchor_preview(start, end)
+
+        def on_result(text: str | None) -> None:
+            if not text:
+                return
+            self.review.add_comment(start, end, text, author=self.author)
+            self.review.save()
+            self.anchor = None
+            self._after_mutation("comment saved")
+
+        self.push_screen(CommentInput(preview), on_result)
+
+    def action_edit_comment(self) -> None:
+        target = self._target_comment()
+        if target is None:
+            self.notify("no comment under cursor", severity="warning")
+            return
+        preview = self._anchor_preview(target.start, target.end)
+
+        def on_result(text: str | None) -> None:
+            if not text or text == target.text:
+                return
+            self.review.update_comment(target, text)
+            self.review.save()
+            self._after_mutation("comment updated")
+
+        self.push_screen(CommentInput(preview, initial=target.text), on_result)
+
+    def action_delete_comment(self) -> None:
+        target = self._target_comment()
+        if target is None:
+            self.notify("no comment under cursor", severity="warning")
+            return
+        self.review.delete_comment(target)
+        self.review.save()
+        self._after_mutation("comment deleted")
+
+    def action_search(self) -> None:
+        if self.focused is self.sidebar:
+            self._sidebar_filter_prompt()
+            return
+
+        def on_result(query: str | None) -> None:
+            if not query:
+                return
+            self.search_query = query
+            flags = re.IGNORECASE if query.islower() else 0
+            self.search_matches = [
+                (i, m.start())
+                for i, t in enumerate(self.texts)
+                for m in re.finditer(re.escape(query), t, flags)
+            ]
+            if not self.search_matches:
+                self.notify(f"no matches for {query!r}", severity="warning")
+                self.search_query = ""
+                return
+            self._jump_to(self.search_matches, forward=True)
+            self._repaint()
+
+        self.push_screen(SearchInput(), on_result)
+
+    def _sidebar_filter_prompt(self) -> None:
+        def on_result(query: str | None) -> None:
+            if not query:
+                return
+            matches = [
+                c
+                for c in self.comment_list
+                if self._matches_filter(c, query.lower())
+            ]
+            if not matches:
+                self.notify(f"no comments matching {query!r}", severity="warning")
+                return
+            self.sidebar_filter = query
+            self._update_sidebar()
+            self.sidebar.focus()
+
+        self.push_screen(SearchInput(placeholder="author or text"), on_result)
+
+    def action_toggle_sidebar(self) -> None:
+        # the width change triggers DocumentView.on_resize -> rebuild
+        if self.sidebar.has_class("visible"):
+            self.sidebar.remove_class("visible")
+            if self.sidebar_filter:
+                self.sidebar_filter = ""
+                self._update_sidebar()
+            self.doc_view.focus()
+        else:
+            self.sidebar.add_class("visible")
+            self._sync_sidebar_index()
+            self.sidebar.focus()
+
+    def action_help(self) -> None:
+        self.push_screen(HelpScreen())
+
+    def action_export(self) -> None:
+        self.notify("exporting to docx...")
+
+        def do_export() -> None:
+            try:
+                target = self.review.export_docx()
+                self.call_from_thread(self.notify, f"wrote {target}")
+            except Exception as exc:
+                self.call_from_thread(
+                    self.notify, f"export failed. {exc}", severity="error"
+                )
+
+        self.run_worker(do_export, thread=True)
