@@ -1,15 +1,14 @@
 # sidenote
 
-Terminal reviewer for ODT and docx documents with character-level comments.
-Read a document in a keyboard-driven TUI, select any span of text down to a
-single character, and attach a comment. Comments are written as native ODF
+Review Word (docx) and LibreOffice (ODT) documents entirely from the keyboard. Add comments in a fast terminal UI.
+
+Read a document in a TUI, select any span of text and attach a comment. Comments are written as native ODF
 inline annotations (`office:annotation` + `office:annotation-end`), so they
 open as ordinary comments in LibreOffice. Export to docx goes through
 headless LibreOffice, which maps annotation ranges to real Word comment
 ranges (`commentRangeStart`/`commentRangeEnd`) that co-authors see in Word.
 
-No mouse required. Built for reviewing manuscripts on a laptop in airports
-and on trains.
+No mouse required. Built for reviewing manuscripts on a laptop when for example traveling.
 
 ![sidenote reviewing a document with the comments sidebar open](docs/screenshot.svg)
 
