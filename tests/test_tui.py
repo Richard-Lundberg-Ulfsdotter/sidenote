@@ -70,6 +70,8 @@ def test_edit_comment(sample):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.press("right_square_bracket", "m")
             await pilot.pause()
+            # the dialog names the comment's author
+            assert app.screen.byline.startswith("comment by R")
             # append to the prefilled text
             for ch in " amended":
                 await pilot.press(ch)
@@ -468,5 +470,56 @@ def test_z_view_positioning(sample):
             await pilot.pause()
             assert app.cur == before
             await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_tracked_changes_in_tui(tracked_sample):
+    async def scenario():
+        app = ReviewApp(tracked_sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            # insertion range styled in paragraph 0
+            styles = app._para_styles(0)
+            assert (6, 15, "green") in styles
+            # deletion point marked in paragraph 1
+            styles = app._para_styles(1)
+            assert any(s == "underline red" for _, _, s in styles)
+            # > and < jump between changes with wraparound
+            await pilot.press(">")
+            assert app.cur == (0, 6)
+            assert app._change_at_cursor().author == "Anna"
+            await pilot.press(">")
+            assert app.cur == (1, 6)
+            assert app._change_at_cursor().author == "Magnus"
+            await pilot.press(">")
+            assert app.cur == (0, 6)
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_changes_panel(tracked_sample):
+    async def scenario():
+        app = ReviewApp(tracked_sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("T")
+            await pilot.pause()
+            await pilot.pause()
+            assert app.focused is app.changes_panel
+            assert len(app.changes_panel) == 2
+            # jump to the deletion from the panel
+            await pilot.press("j", "enter")
+            await pilot.pause()
+            assert app.cur == (1, 6)
+            assert app.focused is app.doc_view
+            # panels are mutually exclusive
+            await pilot.press("T")
+            await pilot.pause()
+            await pilot.press("t")
+            await pilot.pause()
+            assert not app.changes_panel.has_class("visible")
+            assert app.sidebar.has_class("visible")
+            await pilot.press("escape", "q")
 
     asyncio.run(scenario())

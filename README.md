@@ -39,6 +39,7 @@ sidenote manuscript.docx             # docx works too, see below
 sidenote manuscript.odt --author "Richard Lundberg-Ulfsdotter"
 
 sidenote list manuscript.odt         # print comments
+sidenote changes manuscript.odt      # print tracked changes
 sidenote add manuscript.odt --para 2 --start 10 --end 24 --text "..."
 sidenote export manuscript.odt       # write manuscript.docx next to it
 sidenote sample demo.odt             # generate a test document
@@ -80,6 +81,8 @@ original file, so export means "write my comments back into the docx".
 | `n` `N`        | next/previous search match (wraps)            |
 | `*` `#`        | search word under cursor forward/backward     |
 | `t`            | open and focus comments sidebar / close it    |
+| `T`            | open and focus tracked-changes panel / close  |
+| `>` `<`        | jump to next/previous tracked change          |
 | `tab`          | switch focus between document and sidebar     |
 | `X`            | export to docx (background)                   |
 | `?`            | help (scrolls with `j`/`k`, escape closes)    |
@@ -100,6 +103,18 @@ clears the filter.
 Search matches highlight in green with the current match in orange, and
 the status bar shows the match position (`/folate 2/5`). `*`/`#` use
 whole-word matching, as in vim.
+
+### Tracked changes
+
+Documents with Word tracked changes show them read-only. Inserted text
+renders green inline, and a red underline marks the position where text
+was deleted. The status bar names the change's author when the cursor
+is on one. `T` opens a panel listing every insertion and deletion with
+author, date, and the affected text, enter jumps to its place in the
+document, and `>`/`<` step through changes without the panel. The
+`changes` subcommand prints the same list in the terminal.
+Format-only changes are not shown, and accepting or rejecting changes
+stays in LibreOffice or Word.
 
 Comments save to the ODT immediately when added, edited, or deleted.
 The comment dialog quotes the full selected text (across paragraphs,
@@ -135,6 +150,8 @@ elements) at the requested offset.
 ## Known limits
 
 - Tables, footnotes, and frames render as their flattened paragraph text.
+- Deleted text is not woven into the running text, it lives in the
+  changes panel. Comments anchored to deleted text are not shown.
 - No comment threads or replies (single-level comments, as in ODF).
 - No editing of the document text, this is a reviewer, not an editor.
 - The docx round-trip goes through LibreOffice, so complex Word layout

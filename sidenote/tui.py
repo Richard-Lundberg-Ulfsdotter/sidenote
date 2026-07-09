@@ -28,7 +28,7 @@ from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.widgets import Footer, Input, Label, ListItem, ListView, Static, TextArea
 
-from sidenote.engine import Comment, OdtReview, Pos
+from sidenote.engine import Comment, OdtReview, Pos, TrackedChange
 
 WORD_RE = re.compile(r"[\wÀ-ɏ]+")
 
@@ -37,6 +37,8 @@ STYLE_SEARCH = "black on green"
 STYLE_SEARCH_CURRENT = "black on orange1"
 STYLE_SELECTION = "reverse"
 STYLE_CURSOR = "black on bright_yellow"
+STYLE_INSERTION = "green"
+STYLE_DELETION = "underline red"
 
 HELP_TEXT = """\
 [b]Movement[/b]
@@ -66,6 +68,12 @@ HELP_TEXT = """\
   * #            filter to selected comment's author, step through
   escape         clear the filter, then back to document
   tab            back to the document
+
+[b]Tracked changes[/b]
+  T              open and focus changes panel / close it
+  > <            jump to next/previous tracked change
+  Insertions show green, a red underline marks where text
+  was deleted. The panel lists both with author and text.
 
 [b]Search[/b]
   /              search (smartcase)
@@ -127,17 +135,20 @@ class CommentInput(ModalScreen[str | None]):
         Binding("ctrl+s", "submit", "save"),
     ]
 
-    def __init__(self, anchor_preview: str, initial: str = ""):
+    def __init__(
+        self, anchor_preview: str, initial: str = "", byline: str = ""
+    ):
         super().__init__()
         self.anchor_preview = anchor_preview
         self.initial = initial
+        self.byline = byline
 
     def compose(self) -> ComposeResult:
+        header = f"[b]Comment on[/b]\n{escape(self.anchor_preview)}"
+        if self.byline:
+            header += f"\n[dim]{escape(self.byline)}[/dim]"
         with Vertical(id="comment-dialog"):
-            yield Static(
-                f"[b]Comment on[/b]\n{escape(self.anchor_preview)}",
-                id="comment-anchor",
-            )
+            yield Static(header, id="comment-anchor")
             yield TextArea(self.initial, id="comment-text")
             yield Label("[dim]ctrl+s save · escape cancel[/dim]")
 
@@ -205,7 +216,7 @@ class HelpScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
-class CommentsList(ListView):
+class SideList(ListView):
     """Sidebar list of comments with vim-style selection keys."""
 
     BINDINGS = [
@@ -251,9 +262,9 @@ class ReviewApp(App):
 
     CSS = """
     DocumentView { width: 3fr; }
-    #sidebar { width: 44; border: round $primary; padding: 0 1; display: none; }
-    #sidebar.visible { display: block; }
-    #sidebar ListItem { height: auto; padding: 0 1; }
+    #sidebar, #changes { width: 44; border: round $primary; padding: 0 1; display: none; }
+    #sidebar.visible, #changes.visible { display: block; }
+    #sidebar ListItem, #changes ListItem { height: auto; padding: 0 1; }
     #statusbar { dock: top; height: 1; background: $primary-background; padding: 0 1; }
     CommentInput, SearchInput, HelpScreen { align: center middle; }
     #comment-dialog {
@@ -280,6 +291,7 @@ class ReviewApp(App):
         Binding("d", "delete_comment", "delete"),
         Binding("slash", "search", "search"),
         Binding("t", "toggle_sidebar", "comments"),
+        Binding("T", "toggle_changes", "changes"),
         Binding("X", "export", "docx"),
         Binding("question_mark", "help", "help"),
         Binding("escape", "clear_transient", show=False),
@@ -292,6 +304,7 @@ class ReviewApp(App):
         self.review = OdtReview(self.path)
         self.texts: list[str] = self.review.para_texts()
         self.comment_list: list[Comment] = self.review.comments()
+        self.doc_changes: list[TrackedChange] = self.review.changes()
         self.cur: Pos = (0, 0)
         self.anchor: Pos | None = None
         self.goal_col = 0
@@ -312,14 +325,17 @@ class ReviewApp(App):
         yield Static(id="statusbar")
         with Horizontal():
             yield DocumentView(id="doc")
-            yield CommentsList(id="sidebar")
+            yield SideList(id="sidebar")
+            yield SideList(id="changes")
         yield Footer()
 
     def on_mount(self) -> None:
         self.doc_view = self.query_one("#doc", DocumentView)
         self.status_widget = self.query_one("#statusbar", Static)
-        self.sidebar = self.query_one("#sidebar", CommentsList)
+        self.sidebar = self.query_one("#sidebar", SideList)
         self.sidebar.border_title = "comments"
+        self.changes_panel = self.query_one("#changes", SideList)
+        self.changes_panel.border_title = "changes"
         self.doc_view.focus()
         self.rebuild_lines()
         self._update_sidebar()
@@ -378,6 +394,16 @@ class ReviewApp(App):
         """Style ranges over one paragraph's text, cursor applied last."""
         n = len(self.texts[para])
         ranges: list[tuple[int, int, str]] = []
+        for ch in self.doc_changes:
+            if ch.kind == "insertion":
+                s, e = ch.start, ch.end
+                if s[0] <= para <= e[0]:
+                    lo = s[1] if s[0] == para else 0
+                    hi = e[1] if e[0] == para else n
+                    ranges.append((lo, min(hi, n), STYLE_INSERTION))
+            elif ch.start[0] == para and n:
+                o = min(ch.start[1], n - 1)
+                ranges.append((o, o + 1, STYLE_DELETION))
         for c in self.comment_list:
             s, e = c.start, max(c.end, (c.start[0], c.start[1] + 1))
             if s[0] <= para <= e[0]:
@@ -420,10 +446,16 @@ class ReviewApp(App):
                 f" · /{escape(self.search_query)} "
                 f"{pos}/{len(self.search_matches)}"
             )
+        change = ""
+        ch = self._change_at_cursor()
+        if ch is not None:
+            sign = "+" if ch.kind == "insertion" else "-"
+            date = f" {ch.date[:10]}" if ch.date else ""
+            change = f" · {sign} {escape(ch.author)}{date}"
         self.status_widget.update(
             f"[b]{escape(self.path.name)}[/b] · {mode} · "
             f"para {p + 1}/{len(self.texts)} char {o} · "
-            f"comments {len(self.comment_list)}{search}"
+            f"comments {len(self.comment_list)}{search}{change}"
         )
 
     @staticmethod
@@ -497,6 +529,48 @@ class ReviewApp(App):
         if idx is None or idx >= len(self._sidebar_indices):
             return None
         return self.comment_list[self._sidebar_indices[idx]]
+
+    def _update_changes_panel(self) -> None:
+        items: list[ListItem] = []
+        for i, ch in enumerate(self.doc_changes, 1):
+            if ch.kind == "insertion":
+                head = f"[b]{i}.[/b] [green]+ inserted[/green]"
+            else:
+                head = f"[b]{i}.[/b] [red]- deleted[/red]"
+            date = ch.date[:10] if ch.date else ""
+            text = ch.text if len(ch.text) <= 120 else ch.text[:117] + "..."
+            items.append(
+                ListItem(
+                    Static(
+                        f"{head}\n[dim]{escape(ch.author)} {date}[/dim]\n"
+                        f"{escape(text)}"
+                    )
+                )
+            )
+        self.changes_panel.clear()
+        if items:
+            self.changes_panel.extend(items)
+            self.call_after_refresh(self._set_changes_index, 0)
+
+    def _set_changes_index(self, index: int) -> None:
+        if len(self.changes_panel):
+            self.changes_panel.index = min(index, len(self.changes_panel) - 1)
+
+    def _sync_changes_index(self) -> None:
+        if not self.doc_changes:
+            return
+        after = [
+            i for i, ch in enumerate(self.doc_changes) if ch.start >= self.cur
+        ]
+        self.call_after_refresh(self._set_changes_index, after[0] if after else 0)
+
+    def _change_at_cursor(self) -> TrackedChange | None:
+        for ch in self.doc_changes:
+            if ch.kind == "insertion" and ch.start <= self.cur < ch.end:
+                return ch
+            if ch.kind == "deletion" and ch.start == self.cur:
+                return ch
+        return None
 
     def _cursor_line(self) -> int:
         """Display line of the cursor. Scans only the cursor's paragraph."""
@@ -649,6 +723,17 @@ class ReviewApp(App):
             self._update_sidebar(keep_index=(pos + step) % len(filtered))
         event.stop()
 
+    def _changes_key(self, event) -> None:
+        """n/N cycle through the changes list with wraparound."""
+        ch = event.character
+        count = len(self.changes_panel)
+        if count == 0 or ch not in ("n", "N"):
+            return
+        idx = self.changes_panel.index or 0
+        step = 1 if ch == "n" else -1
+        self.changes_panel.index = (idx + step) % count
+        event.stop()
+
     def _search_word_under_cursor(self, forward: bool) -> None:
         """Vim * and #. Whole-word search for the word at the cursor."""
         p, o = self.cur
@@ -681,6 +766,9 @@ class ReviewApp(App):
             return
         if self.focused is self.sidebar:
             self._sidebar_key(event)
+            return
+        if self.focused is self.changes_panel:
+            self._changes_key(event)
             return
         if self.focused is not self.doc_view:
             return
@@ -759,6 +847,10 @@ class ReviewApp(App):
             self._jump_to([c.start for c in self.comment_list], forward=True)
         elif ch == "[":
             self._jump_to([c.start for c in self.comment_list], forward=False)
+        elif ch == ">":
+            self._jump_to([c.start for c in self.doc_changes], forward=True)
+        elif ch == "<":
+            self._jump_to([c.start for c in self.doc_changes], forward=False)
         elif ch == "n":
             self._jump_to(self.search_matches, forward=True)
         elif ch == "N":
@@ -781,6 +873,9 @@ class ReviewApp(App):
         self._repaint()
 
     def action_clear_transient(self) -> None:
+        if self.focused is self.changes_panel:
+            self.doc_view.focus()
+            return
         if self.focused is self.sidebar:
             if self.sidebar_filter:
                 self.sidebar_filter = ""
@@ -798,11 +893,17 @@ class ReviewApp(App):
         self._repaint()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        """Enter in the sidebar jumps to the comment's anchor."""
-        target = self._sidebar_comment()
-        if target is None:
-            return
-        start = target.start
+        """Enter in a side panel jumps to the entry's anchor."""
+        if event.list_view is self.changes_panel:
+            idx = self.changes_panel.index
+            if idx is None or idx >= len(self.doc_changes):
+                return
+            start = self.doc_changes[idx].start
+        else:
+            target = self._sidebar_comment()
+            if target is None:
+                return
+            start = target.start
         self.cur = (start[0], min(start[1], self._max_off(start[0])))
         self.goal_col = 0
         self.doc_view.focus()
@@ -842,6 +943,7 @@ class ReviewApp(App):
         self.review = OdtReview(self.path)
         self.texts = self.review.para_texts()
         self.comment_list = self.review.comments()
+        self.doc_changes = self.review.changes()
         self.rebuild_lines()
         self._update_sidebar(keep_index=keep)
         self.notify(message)
@@ -875,7 +977,12 @@ class ReviewApp(App):
             self.review.save()
             self._after_mutation("comment updated")
 
-        self.push_screen(CommentInput(preview, initial=target.text), on_result)
+        byline = f"comment by {target.author}" if target.author else ""
+        if byline and target.date:
+            byline += f", {target.date[:10]}"
+        self.push_screen(
+            CommentInput(preview, initial=target.text, byline=byline), on_result
+        )
 
     def action_delete_comment(self) -> None:
         target = self._target_comment()
@@ -937,9 +1044,25 @@ class ReviewApp(App):
                 self._update_sidebar()
             self.doc_view.focus()
         else:
+            self.changes_panel.remove_class("visible")
             self.sidebar.add_class("visible")
             self._sync_sidebar_index()
             self.sidebar.focus()
+
+    def action_toggle_changes(self) -> None:
+        if self.changes_panel.has_class("visible"):
+            self.changes_panel.remove_class("visible")
+            self.doc_view.focus()
+        else:
+            if self.sidebar.has_class("visible"):
+                self.sidebar.remove_class("visible")
+                if self.sidebar_filter:
+                    self.sidebar_filter = ""
+                    self._update_sidebar()
+            self.changes_panel.add_class("visible")
+            self._update_changes_panel()
+            self._sync_changes_index()
+            self.changes_panel.focus()
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())

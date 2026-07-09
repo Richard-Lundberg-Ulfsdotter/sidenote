@@ -23,10 +23,10 @@ from pathlib import Path
 
 from odf import dc
 from odf.element import Element, Node, Text
-from odf.namespaces import DCNS, OFFICENS, TEXTNS
+from odf.namespaces import DCNS, OFFICENS, TEXTNS, XMLNS
 from odf.office import Annotation, AnnotationEnd
 from odf.opendocument import load
-from odf.text import P, S
+from odf.text import ChangedRegion, P, S
 
 P_QNAME = (TEXTNS, "p")
 H_QNAME = (TEXTNS, "h")
@@ -35,6 +35,22 @@ TAB_QNAME = (TEXTNS, "tab")
 LINEBREAK_QNAME = (TEXTNS, "line-break")
 ANNOTATION_QNAME = (OFFICENS, "annotation")
 ANNOTATION_END_QNAME = (OFFICENS, "annotation-end")
+TRACKED_CHANGES_QNAME = (TEXTNS, "tracked-changes")
+CHANGE_QNAME = (TEXTNS, "change")
+CHANGE_START_QNAME = (TEXTNS, "change-start")
+CHANGE_END_QNAME = (TEXTNS, "change-end")
+INSERTION_QNAME = (TEXTNS, "insertion")
+DELETION_QNAME = (TEXTNS, "deletion")
+CHANGE_INFO_QNAME = (OFFICENS, "change-info")
+
+# zero-width marker elements collected with their text offsets
+MARK_QNAMES = (
+    ANNOTATION_QNAME,
+    ANNOTATION_END_QNAME,
+    CHANGE_QNAME,
+    CHANGE_START_QNAME,
+    CHANGE_END_QNAME,
+)
 
 Pos = tuple[int, int]
 
@@ -100,6 +116,23 @@ class Comment:
 
 
 @dataclass
+class TrackedChange:
+    """A tracked change read from the document, never written.
+
+    Insertions span (start, end) in the body text. Deletions are a
+    point (start == end) where the text used to be, with the removed
+    text recovered from the tracked-changes metadata block.
+    """
+
+    kind: str
+    author: str
+    date: str
+    text: str
+    start: Pos
+    end: Pos
+
+
+@dataclass
 class _Seg:
     """One leaf of a paragraph flattened to plain-text segments."""
 
@@ -155,6 +188,16 @@ def _flatten(el: Element, segs: list[_Seg], offset: int) -> int:
             else:
                 offset = _flatten(node, segs, offset)
     return offset
+
+
+def _extract_range(texts: list[str], start: Pos, end: Pos) -> str:
+    (p1, o1), (p2, o2) = start, end
+    if p1 == p2:
+        return texts[p1][o1:o2]
+    parts = [texts[p1][o1:]]
+    parts.extend(texts[i] for i in range(p1 + 1, p2))
+    parts.append(texts[p2][:o2])
+    return "\n".join(parts)
 
 
 def _insert_after(parent: Element, ref: Node, new_node: Node) -> None:
@@ -220,7 +263,13 @@ class OdtReview:
         for node in el.childNodes:
             if node.nodeType != Node.ELEMENT_NODE:
                 continue
-            if node.qname in (ANNOTATION_QNAME, ANNOTATION_END_QNAME):
+            # tracked-changes holds deleted/changed fragments as
+            # text:p metadata, not document content
+            if node.qname in (
+                ANNOTATION_QNAME,
+                ANNOTATION_END_QNAME,
+                TRACKED_CHANGES_QNAME,
+            ):
                 continue
             if node.qname in (P_QNAME, H_QNAME):
                 out.append(node)
@@ -237,17 +286,34 @@ class OdtReview:
     def comments(self) -> list[Comment]:
         out: list[Comment] = []
         open_ranges: dict[str, Comment] = {}
-        for i, par in enumerate(self.paragraphs):
-            self._walk_comments(par, i, 0, open_ranges, out)
+        for para_idx, offset, node in self._marks():
+            q = node.qname
+            if q == ANNOTATION_QNAME:
+                comment = self._read_annotation(node, (para_idx, offset))
+                out.append(comment)
+                if comment.name:
+                    open_ranges[comment.name] = comment
+            elif q == ANNOTATION_END_QNAME:
+                name = node.getAttrNS(OFFICENS, "name")
+                if name in open_ranges:
+                    open_ranges[name].end = (para_idx, offset)
+                    open_ranges[name].end_node = node
+                    del open_ranges[name]
         return out
 
-    def _walk_comments(
+    def _marks(self) -> list[tuple[int, int, Element]]:
+        """All zero-width markers as (paragraph, offset, element)."""
+        marks: list[tuple[int, int, Element]] = []
+        for i, par in enumerate(self.paragraphs):
+            self._collect_marks(par, i, 0, marks)
+        return marks
+
+    def _collect_marks(
         self,
         el: Element,
         para_idx: int,
         offset: int,
-        open_ranges: dict[str, Comment],
-        out: list[Comment],
+        marks: list[tuple[int, int, Element]],
     ) -> int:
         for node in el.childNodes:
             if node.nodeType == Node.TEXT_NODE:
@@ -258,22 +324,113 @@ class OdtReview:
                     offset += _space_count(node)
                 elif q in (TAB_QNAME, LINEBREAK_QNAME):
                     offset += 1
-                elif q == ANNOTATION_QNAME:
-                    comment = self._read_annotation(node, (para_idx, offset))
-                    out.append(comment)
-                    if comment.name:
-                        open_ranges[comment.name] = comment
-                elif q == ANNOTATION_END_QNAME:
-                    name = node.getAttrNS(OFFICENS, "name")
-                    if name in open_ranges:
-                        open_ranges[name].end = (para_idx, offset)
-                        open_ranges[name].end_node = node
-                        del open_ranges[name]
+                elif q in MARK_QNAMES:
+                    marks.append((para_idx, offset, node))
                 else:
-                    offset = self._walk_comments(
-                        node, para_idx, offset, open_ranges, out
-                    )
+                    offset = self._collect_marks(node, para_idx, offset, marks)
         return offset
+
+    # ------------------------------------------------------------------
+    # Tracked changes (read only)
+    # ------------------------------------------------------------------
+
+    def changes(self) -> list[TrackedChange]:
+        """Tracked changes in document order.
+
+        Insertions come from inline change-start/end markers, their
+        text read straight from the body. Deletions come from the
+        point marker plus the removed text stored in the metadata
+        block. Format-only changes are ignored.
+        """
+        regions = self._change_regions()
+        texts = self.para_texts()
+        out: list[TrackedChange] = []
+        open_starts: dict[str, Pos] = {}
+        for para_idx, offset, node in self._marks():
+            q = node.qname
+            if q == CHANGE_START_QNAME:
+                cid = node.getAttrNS(TEXTNS, "change-id")
+                open_starts[cid] = (para_idx, offset)
+            elif q == CHANGE_END_QNAME:
+                cid = node.getAttrNS(TEXTNS, "change-id")
+                region = regions.get(cid)
+                start = open_starts.pop(cid, None)
+                if region is None or start is None:
+                    continue
+                if region["kind"] != "insertion":
+                    continue
+                end = (para_idx, offset)
+                out.append(
+                    TrackedChange(
+                        "insertion",
+                        region["author"],
+                        region["date"],
+                        _extract_range(texts, start, end),
+                        start,
+                        end,
+                    )
+                )
+            elif q == CHANGE_QNAME:
+                cid = node.getAttrNS(TEXTNS, "change-id")
+                region = regions.get(cid)
+                if region is None or region["kind"] != "deletion":
+                    continue
+                pos = (para_idx, offset)
+                out.append(
+                    TrackedChange(
+                        "deletion",
+                        region["author"],
+                        region["date"],
+                        region["text"],
+                        pos,
+                        pos,
+                    )
+                )
+        out.sort(key=lambda c: c.start)
+        return out
+
+    def _change_regions(self) -> dict[str, dict]:
+        """Metadata for each changed region, keyed by change id."""
+        regions: dict[str, dict] = {}
+        for region in self.doc.text.getElementsByType(ChangedRegion):
+            rid = region.getAttrNS(TEXTNS, "id") or region.getAttrNS(
+                XMLNS, "id"
+            )
+            if not rid:
+                continue
+            body = None
+            kind = None
+            for child in region.childNodes:
+                if child.nodeType != Node.ELEMENT_NODE:
+                    continue
+                if child.qname == INSERTION_QNAME:
+                    kind, body = "insertion", child
+                elif child.qname == DELETION_QNAME:
+                    kind, body = "deletion", child
+            if body is None:
+                continue
+            author = date = ""
+            deleted: list[str] = []
+            for child in body.childNodes:
+                if child.nodeType != Node.ELEMENT_NODE:
+                    continue
+                if child.qname == CHANGE_INFO_QNAME:
+                    for info in child.childNodes:
+                        if info.nodeType != Node.ELEMENT_NODE:
+                            continue
+                        if info.qname == (DCNS, "creator"):
+                            author = _plain_text(info)
+                        elif info.qname == (DCNS, "date"):
+                            date = _plain_text(info)
+                elif child.qname in (P_QNAME, H_QNAME):
+                    deleted.append(_plain_text(child))
+            regions[rid] = {
+                "kind": kind,
+                "author": author,
+                "date": date,
+                "text": "\n".join(deleted),
+            }
+        return regions
 
     def _read_annotation(self, node: Element, pos: Pos) -> Comment:
         creators = node.getElementsByType(dc.Creator)

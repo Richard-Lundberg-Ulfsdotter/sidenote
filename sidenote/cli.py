@@ -2,6 +2,7 @@
 
 sidenote FILE                 open the TUI (.odt or .docx)
 sidenote list FILE            list comments
+sidenote changes FILE         list tracked changes
 sidenote add FILE ...         add a comment non-interactively
 sidenote export FILE          convert to docx via headless LibreOffice
 sidenote sample FILE          write a small sample ODT for testing
@@ -18,7 +19,7 @@ from pathlib import Path
 
 from sidenote.engine import OdtReview, docx_to_odt
 
-SUBCOMMANDS = ("view", "list", "add", "export", "sample")
+SUBCOMMANDS = ("view", "list", "add", "changes", "export", "sample")
 
 
 def make_sample(path: Path) -> None:
@@ -120,6 +121,9 @@ def main(argv: list[str] | None = None) -> int:
     p_add.add_argument("--text", required=True)
     p_add.add_argument("--author")
 
+    p_changes = sub.add_parser("changes", help="list tracked changes")
+    p_changes.add_argument("file", type=Path)
+
     p_export = sub.add_parser("export", help="convert to docx")
     p_export.add_argument("file", type=Path)
     p_export.add_argument("--outdir", type=Path)
@@ -153,6 +157,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "list":
         cmd_list(review)
+    elif args.command == "changes":
+        changes = review.changes()
+        if not changes:
+            print("no tracked changes")
+        for i, ch in enumerate(changes, 1):
+            sign = "+" if ch.kind == "insertion" else "-"
+            sp, so = ch.start
+            print(f"[{i}] {sign} {ch.author} {ch.date} (para {sp} @{so})")
+            print(f"    {ch.text}")
     elif args.command == "add":
         end_para = args.end_para if args.end_para is not None else args.para
         end_off = args.end if args.end is not None else args.start

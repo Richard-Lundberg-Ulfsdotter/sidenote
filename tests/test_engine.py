@@ -159,3 +159,71 @@ def test_docx_export_carries_comment(sample, tmp_path):
     assert "cite the reviews" in comments_xml
     assert "commentRangeStart" in document_xml
     assert "commentRangeEnd" in document_xml
+
+
+def test_tracked_changes_not_rendered(tmp_path):
+    """Word tracked changes convert to a text:tracked-changes block
+    whose deleted fragments must not appear as document paragraphs."""
+    from odf.office import ChangeInfo
+    from odf.opendocument import OpenDocumentText
+    from odf.text import ChangedRegion, Deletion, P, TrackedChanges
+
+    from odf.namespaces import TEXTNS, XMLNS
+
+    doc = OpenDocumentText()
+    tracked = TrackedChanges()
+    region = ChangedRegion(check_grammar=False)
+    region.setAttrNS(XMLNS, "id", "ct1")
+    region.setAttrNS(TEXTNS, "id", "ct1")
+    deletion = Deletion()
+    deletion.addElement(ChangeInfo())
+    deletion.addElement(P(text="deleted fragment"))
+    region.addElement(deletion)
+    tracked.addElement(region)
+    doc.text.addElement(tracked)
+    doc.text.addElement(P(text="Visible paragraph one."))
+    doc.text.addElement(P(text="Visible paragraph two."))
+    path = tmp_path / "tracked.odt"
+    doc.save(str(path))
+
+    review = OdtReview(path)
+    assert review.para_texts() == [
+        "Visible paragraph one.",
+        "Visible paragraph two.",
+    ]
+    # comments anchor into the visible text without disturbance
+    review.add_comment((0, 0), (0, 7), "note", author="R")
+    review.save()
+    reloaded = OdtReview(path)
+    assert reloaded.comments()[0].end == (0, 7)
+    assert reloaded.para_texts()[0] == "Visible paragraph one."
+
+
+def test_changes_parsing(tracked_sample):
+    review = OdtReview(tracked_sample)
+    # the inline markers are zero-width in the text
+    assert review.para_texts() == ["Hello new words world", "Start finish"]
+
+    changes = review.changes()
+    assert len(changes) == 2
+    ins, dele = changes
+    assert ins.kind == "insertion"
+    assert ins.author == "Anna"
+    assert ins.text == "new words"
+    assert (ins.start, ins.end) == ((0, 6), (0, 15))
+    assert dele.kind == "deletion"
+    assert dele.author == "Magnus"
+    assert dele.text == "old text"
+    assert dele.start == dele.end == (1, 6)
+
+
+def test_changes_do_not_disturb_comments(tracked_sample):
+    review = OdtReview(tracked_sample)
+    review.add_comment((0, 6), (0, 15), "note on inserted text", author="R")
+    review.save()
+    reloaded = OdtReview(tracked_sample)
+    c = reloaded.comments()[0]
+    assert (c.start, c.end) == ((0, 6), (0, 15))
+    ins = [ch for ch in reloaded.changes() if ch.kind == "insertion"][0]
+    assert (ins.start, ins.end) == ((0, 6), (0, 15))
+    assert reloaded.para_texts()[0] == "Hello new words world"

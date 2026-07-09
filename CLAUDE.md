@@ -49,7 +49,16 @@ native ODF inline annotations. See README.md for usage and keys.
   and all user-supplied strings (comment text, filenames, anchors) go
   through `rich.markup.escape` before landing in a Static, or markup
   parsing crashes.
-- The sidebar is a `CommentsList(ListView)`, fully keyboard-driven.
+- Tracked changes are read-only. `engine.changes()` pairs inline
+  `text:change-start/end/change` markers (zero-width, found by the
+  same `_collect_marks` walker as annotations) with author/date and
+  deleted text from the `text:tracked-changes` block, which
+  `_collect_paragraphs` skips. Insertions live in the body text,
+  deletions only in the metadata block, hence the panel design.
+  Format-only regions are ignored.
+- The sidebar is a `SideList(ListView)`, fully keyboard-driven, and
+  the tracked-changes panel (`T`) is a second `SideList` instance.
+  The two panels are mutually exclusive.
   `m`/`d` resolve their target via `_target_comment()` (sidebar
   selection when focused, else document cursor). Rebuilds go through
   `_update_sidebar()` whose index set is deferred with
