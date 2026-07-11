@@ -72,8 +72,10 @@ HELP_TEXT = """\
 [b]Tracked changes[/b]
   T              open and focus changes panel / close it
   > <            jump to next/previous tracked change
-  Insertions show green, a red underline marks where text
-  was deleted. The panel lists both with author and text.
+  D              show/hide deleted text lines
+  Insertions show green. Deleted text appears as red
+  struck-through lines at the spot it was removed, and in
+  the status bar when the cursor is on the red mark.
 
 [b]Search[/b]
   /              search (smartcase)
@@ -98,6 +100,17 @@ class Line:
     para: int
     start: int
     end: int
+
+
+@dataclass
+class DelLine:
+    """A virtual display line showing deleted text at its position.
+
+    Carries no document mapping. The cursor skips these lines, so
+    they never participate in offsets or comment anchoring.
+    """
+
+    text: str
 
 
 def wrap_offsets(text: str, width: int) -> list[tuple[int, int]]:
@@ -305,6 +318,7 @@ class ReviewApp(App):
         self.texts: list[str] = self.review.para_texts()
         self.comment_list: list[Comment] = self.review.comments()
         self.doc_changes: list[TrackedChange] = self.review.changes()
+        self.show_deletions = True
         self.cur: Pos = (0, 0)
         self.anchor: Pos | None = None
         self.goal_col = 0
@@ -358,8 +372,25 @@ class ReviewApp(App):
             self._para_line_start.append(len(self.lines))
             # render an empty paragraph as one space so the cursor shows
             render_text = text if text else " "
-            for start, end in wrap_offsets(render_text, width):
+            deletions = (
+                [
+                    ch
+                    for ch in self.doc_changes
+                    if ch.kind == "deletion" and ch.start[0] == i
+                ]
+                if self.show_deletions
+                else []
+            )
+            spans = wrap_offsets(render_text, width)
+            for start, end in spans:
                 self.lines.append(Line(i, start, end))
+                last = end == len(render_text)
+                for ch in deletions:
+                    off = ch.start[1]
+                    if start <= off < end or (last and off >= end):
+                        del_text = ch.text if ch.text.strip() else "(whitespace)"
+                        for ds, de in wrap_offsets(del_text, max(width - 2, 8)):
+                            self.lines.append(DelLine(del_text[ds:de]))
             self.lines.append(None)
         self.doc_view.virtual_size = Size(width, len(self.lines))
         self._repaint()
@@ -373,6 +404,11 @@ class ReviewApp(App):
     def render_doc_line(self, row: int) -> RichText:
         """Styled text for one display line, called for visible rows."""
         line = self.lines[row]
+        if isinstance(line, DelLine):
+            out = RichText("- " + line.text, no_wrap=True)
+            out.stylize("red strike", 2)
+            out.stylize("red", 0, 2)
+            return out
         text = self.texts[line.para] or " "
         out = RichText(
             text[line.start:line.end].replace("\t", " "), no_wrap=True
@@ -432,6 +468,9 @@ class ReviewApp(App):
         return ranges
 
     def _update_statusbar(self) -> None:
+        self.status_widget.update(self._status_text())
+
+    def _status_text(self) -> str:
         mode = "VISUAL" if self.anchor is not None else "NORMAL"
         p, o = self.cur
         search = ""
@@ -452,8 +491,16 @@ class ReviewApp(App):
             sign = "+" if ch.kind == "insertion" else "-"
             date = f" {ch.date[:10]}" if ch.date else ""
             change = f" · {sign} {escape(ch.author)}{date}"
-        self.status_widget.update(
-            f"[b]{escape(self.path.name)}[/b] · {mode} · "
+            if ch.kind == "deletion" and ch.text:
+                excerpt = (
+                    ch.text if len(ch.text) <= 40 else ch.text[:37] + "..."
+                )
+                change += f" '{escape(excerpt)}'"
+        name = self.path.name
+        if len(name) > 28:
+            name = name[:27] + "\u2026"
+        return (
+            f"[b]{escape(name)}[/b] · {mode} · "
             f"para {p + 1}/{len(self.texts)} char {o} · "
             f"comments {len(self.comment_list)}{search}{change}"
         )
@@ -538,7 +585,10 @@ class ReviewApp(App):
             else:
                 head = f"[b]{i}.[/b] [red]- deleted[/red]"
             date = ch.date[:10] if ch.date else ""
-            text = ch.text if len(ch.text) <= 120 else ch.text[:117] + "..."
+            text = ch.text if ch.text.strip() else (
+                "(whitespace)" if ch.text else "(empty)"
+            )
+            text = text if len(text) <= 120 else text[:117] + "..."
             items.append(
                 ListItem(
                     Static(
@@ -578,7 +628,11 @@ class ReviewApp(App):
         idx = self._para_line_start[p] if p < len(self._para_line_start) else 0
         for j in range(idx, len(self.lines)):
             line = self.lines[j]
-            if line is None or line.para != p:
+            if line is None:
+                break
+            if not isinstance(line, Line):
+                continue
+            if line.para != p:
                 break
             idx = j
             if line.start <= o < max(line.end, line.start + 1):
@@ -631,13 +685,15 @@ class ReviewApp(App):
         step = 1 if delta > 0 else -1
         for _ in range(abs(delta)):
             j = idx + step
-            while 0 <= j < len(self.lines) and self.lines[j] is None:
+            while 0 <= j < len(self.lines) and not isinstance(
+                self.lines[j], Line
+            ):
                 j += step
             if not 0 <= j < len(self.lines):
                 break
             idx = j
         line = self.lines[idx]
-        if line is None:
+        if not isinstance(line, Line):
             return
         span = max(line.end - line.start - 1, 0)
         self.cur = (line.para, line.start + min(self.goal_col, span))
@@ -834,6 +890,13 @@ class ReviewApp(App):
             return
         elif ch == "z":
             self.pending_z = True
+            event.stop()
+            return
+        elif ch == "D":
+            self.show_deletions = not self.show_deletions
+            self.rebuild_lines()
+            state = "shown" if self.show_deletions else "hidden"
+            self.notify(f"deleted text {state}")
             event.stop()
             return
         elif ch == "G":

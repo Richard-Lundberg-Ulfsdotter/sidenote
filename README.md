@@ -83,6 +83,7 @@ original file, so export means "write my comments back into the docx".
 | `t`            | open and focus comments sidebar / close it    |
 | `T`            | open and focus tracked-changes panel / close  |
 | `>` `<`        | jump to next/previous tracked change          |
+| `D`            | show/hide deleted text lines                  |
 | `tab`          | switch focus between document and sidebar     |
 | `X`            | export to docx (background)                   |
 | `?`            | help (scrolls with `j`/`k`, escape closes)    |
@@ -107,14 +108,18 @@ whole-word matching, as in vim.
 ### Tracked changes
 
 Documents with Word tracked changes show them read-only. Inserted text
-renders green inline, and a red underline marks the position where text
-was deleted. The status bar names the change's author when the cursor
-is on one. `T` opens a panel listing every insertion and deletion with
-author, date, and the affected text, enter jumps to its place in the
-document, and `>`/`<` step through changes without the panel. The
-`changes` subcommand prints the same list in the terminal.
-Format-only changes are not shown, and accepting or rejecting changes
-stays in LibreOffice or Word.
+renders green inline. Deleted text appears as red struck-through lines
+woven in at the spot it was removed (`D` hides and shows them), and a
+red underline marks the deletion point in the running text. The
+deleted lines are display-only, the cursor skips them and comments
+cannot anchor there. The status bar names the change's author when the
+cursor is on one, including the deleted text for deletions. `T` opens
+a panel listing every insertion and deletion with author, date, and
+the affected text, enter jumps to its place in the document, and
+`>`/`<` step through changes without the panel. The `changes`
+subcommand prints the same list in the terminal. Format-only changes
+are not shown, and accepting or rejecting changes stays in LibreOffice
+or Word.
 
 Comments save to the ODT immediately when added, edited, or deleted.
 The comment dialog quotes the full selected text (across paragraphs,
@@ -150,8 +155,8 @@ elements) at the requested offset.
 ## Known limits
 
 - Tables, footnotes, and frames render as their flattened paragraph text.
-- Deleted text is not woven into the running text, it lives in the
-  changes panel. Comments anchored to deleted text are not shown.
+- Deleted text is shown on separate display lines, not woven into the
+  running sentence. Comments anchored to deleted text are not shown.
 - No comment threads or replies (single-level comments, as in ODF).
 - No editing of the document text, this is a reviewer, not an editor.
 - The docx round-trip goes through LibreOffice, so complex Word layout

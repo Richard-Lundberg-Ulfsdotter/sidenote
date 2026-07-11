@@ -6,7 +6,7 @@ import shutil
 import pytest
 from sidenote.cli import make_sample
 from sidenote.engine import OdtReview
-from sidenote.tui import ReviewApp, wrap_offsets
+from sidenote.tui import DelLine, Line, ReviewApp, wrap_offsets
 
 needs_soffice = pytest.mark.skipif(
     shutil.which("soffice") is None, reason="LibreOffice not installed"
@@ -521,5 +521,71 @@ def test_changes_panel(tracked_sample):
             assert not app.changes_panel.has_class("visible")
             assert app.sidebar.has_class("visible")
             await pilot.press("escape", "q")
+
+    asyncio.run(scenario())
+
+
+def test_deleted_text_lines(tracked_sample):
+    async def scenario():
+        app = ReviewApp(tracked_sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            # the deleted text renders as a virtual line after the
+            # display line containing the deletion point
+            del_lines = [l for l in app.lines if isinstance(l, DelLine)]
+            assert [l.text for l in del_lines] == ["old text"]
+            row = next(
+                i for i, l in enumerate(app.lines) if isinstance(l, DelLine)
+            )
+            rendered = app.render_doc_line(row)
+            assert rendered.plain == "- old text"
+            # the cursor can never land on a virtual line
+            for _ in range(10):
+                await pilot.press("j")
+            assert isinstance(app.lines[app._cursor_line()], Line)
+            # D hides the deleted text, and shows it again
+            await pilot.press("D")
+            assert not any(isinstance(l, DelLine) for l in app.lines)
+            await pilot.press("D")
+            assert any(isinstance(l, DelLine) for l in app.lines)
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_deletion_status_excerpt(tracked_sample):
+    async def scenario():
+        app = ReviewApp(tracked_sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            # jump to the deletion point, status names author and text
+            await pilot.press(">", ">")
+            assert app.cur == (1, 6)
+            ch = app._change_at_cursor()
+            assert ch.kind == "deletion"
+            assert ch.text == "old text"
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_status_bar_survives_long_filename(tmp_path):
+    long_name = (
+        "Comparison of ASQ at different ages with the developmental "
+        "assessment at the Child Healthcare Center.odt"
+    )
+    path = tmp_path / long_name
+    make_sample(path)
+
+    async def scenario():
+        app = ReviewApp(path)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            status = app._status_text()
+            # the filename is truncated so the live info stays visible
+            assert "NORMAL" in status
+            assert "para 1/5" in status
+            assert "comments 0" in status
+            assert long_name not in status
+            await pilot.press("q")
 
     asyncio.run(scenario())

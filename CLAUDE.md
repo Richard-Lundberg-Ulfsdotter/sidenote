@@ -54,8 +54,10 @@ native ODF inline annotations. See README.md for usage and keys.
   same `_collect_marks` walker as annotations) with author/date and
   deleted text from the `text:tracked-changes` block, which
   `_collect_paragraphs` skips. Insertions live in the body text,
-  deletions only in the metadata block, hence the panel design.
-  Format-only regions are ignored.
+  deletions only in the metadata block. Deleted text renders as
+  `DelLine` virtual display lines in `ReviewApp.lines` (toggled with
+  `D`). The cursor and all offset math skip anything that is not a
+  `Line`, so the invariant holds. Format-only regions are ignored.
 - The sidebar is a `SideList(ListView)`, fully keyboard-driven, and
   the tracked-changes panel (`T`) is a second `SideList` instance.
   The two panels are mutually exclusive.
