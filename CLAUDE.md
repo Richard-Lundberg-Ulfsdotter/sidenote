@@ -61,6 +61,16 @@ sidecar JSON file. See README.md for usage and keys.
   skips them) so they can re-attach if the text returns.
 - `Comment.orphan` is always False for ODT, where the anchor is an
   element in the document. Only sidecar formats can orphan.
+- Markdown comment names are positions, not identities. `save()` calls
+  `_renumber()` after `_recapture()`, which sorts `_records` into
+  document order and reassigns `cmt1..cmtN`, orphans last because
+  their position is a fallback guess. So `cmt3` in the sidecar is the
+  comment the sidebar numbers 3, which is the point, a reader of the
+  JSON and a reader of the screen name the same comment. The cost is
+  that inserting a comment renames every comment below it. ODT does
+  NOT do this and should not. There `office:name` is the structural
+  key pairing `office:annotation` with `office:annotation-end`, and
+  point comments carry no name at all.
 - The sidecar stores a digest of the source. `status()` reports
   totals, orphans, and whether the document moved since the last save.
   The TUI notifies on mount via `_report_anchor_health`, `sidenote

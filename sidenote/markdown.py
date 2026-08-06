@@ -426,9 +426,11 @@ class MarkdownReview:
 
         Anchors are re-captured against the current text first, so a
         comment that was relocated on load is stored at the place it
-        actually sits now.
+        actually sits now, then the records are renumbered into
+        document order.
         """
         self._recapture()
+        self._renumber()
         target = Path(path) if path else self.sidecar
         payload = {
             "version": SIDECAR_VERSION,
@@ -454,6 +456,23 @@ class MarkdownReview:
                 record.quote = _extract_range(
                     self._texts, comment.start, comment.end
                 )
+
+    def _renumber(self) -> None:
+        """Name the records cmt1..cmtN in document order, orphans last.
+
+        The sidebar numbers comments by position, so tying the stored
+        name to the same order leaves one number that means the same
+        thing on screen and in the sidecar. Orphans go last because
+        their position is a fallback guess, not a real anchor, and
+        would otherwise renumber the live comments around them.
+        """
+        ordered = self.comments()
+        records = [
+            self._record_for(c) for c in ordered if not c.orphan
+        ] + [self._record_for(c) for c in ordered if c.orphan]
+        for n, record in enumerate(records, 1):
+            record.name = f"cmt{n}"
+        self._records = records
 
     def export_docx(self, out_dir: str | Path | None = None) -> Path:
         raise RuntimeError(

@@ -204,8 +204,9 @@ def test_orphan_keeps_its_stored_anchor_across_a_save(doc):
     # still be re-found if the text comes back
     payload = json.loads(sidecar_path(doc).read_text(encoding="utf-8"))
     stored = {c["name"]: c for c in payload["comments"]}
-    assert stored["cmt1"]["quote"] == "dose-response"
-    assert stored["cmt1"]["start"]["after"].startswith("dose-response")
+    # cmt2 because renumbering puts orphans after the live comments
+    assert stored["cmt2"]["quote"] == "dose-response"
+    assert stored["cmt2"]["start"]["after"].startswith("dose-response")
 
 
 def test_save_recaptures_moved_anchors(doc):
@@ -219,6 +220,47 @@ def test_save_recaptures_moved_anchors(doc):
 
     payload = json.loads(sidecar_path(doc).read_text(encoding="utf-8"))
     assert payload["comments"][0]["start"]["para"] == 3
+
+
+# ----------------------------------------------------------------------
+# Naming
+# ----------------------------------------------------------------------
+
+
+def test_names_run_top_to_bottom_whatever_the_order_written(doc):
+    """cmtN is the Nth comment down, which is what the sidebar shows."""
+    review = MarkdownReview(doc)
+    review.add_comment((4, 0), (4, 0), "last")
+    review.add_comment((2, 0), (2, 0), "middle")
+    review.add_comment((1, 0), (1, 0), "first")
+    review.save()
+
+    payload = json.loads(sidecar_path(doc).read_text(encoding="utf-8"))
+    assert [c["name"] for c in payload["comments"]] == ["cmt1", "cmt2", "cmt3"]
+    assert [c["text"] for c in payload["comments"]] == ["first", "middle", "last"]
+    assert [c.name for c in MarkdownReview(doc).comments()] == [
+        "cmt1",
+        "cmt2",
+        "cmt3",
+    ]
+
+
+def test_deleting_a_comment_closes_the_gap_in_the_names(doc):
+    review = MarkdownReview(doc)
+    for para, text in ((1, "first"), (2, "middle"), (4, "last")):
+        review.add_comment((para, 0), (para, 0), text)
+    review.save()
+
+    reopened = MarkdownReview(doc)
+    middle = next(c for c in reopened.comments() if c.text == "middle")
+    reopened.delete_comment(middle)
+    reopened.save()
+
+    payload = json.loads(sidecar_path(doc).read_text(encoding="utf-8"))
+    assert [(c["name"], c["text"]) for c in payload["comments"]] == [
+        ("cmt1", "first"),
+        ("cmt2", "last"),
+    ]
 
 
 # ----------------------------------------------------------------------

@@ -78,6 +78,13 @@ to `<name>.sidenote.json` next to the document. The markdown itself is never
 written to, which is the point when it feeds a build or lives under version
 control where comment churn would clutter prose diffs.
 
+Comments are stored top to bottom and named for where they sit, so `cmt3`
+in the sidecar is the third comment down and the one numbered 3 in the
+sidebar. That makes it easy to point an editor, or an AI assistant reading
+the JSON, at the comment you are actually looking at. The names are
+positions rather than permanent identities, so adding a comment above an
+existing one renumbers the ones below it.
+
 Keep the two files together. The sidecar is named after the document, so
 moving or renaming the markdown means moving the sidecar with it, and
 committing both in one commit gives any past revision a matching set of
