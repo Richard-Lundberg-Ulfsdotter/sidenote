@@ -5,7 +5,7 @@ import shutil
 
 import pytest
 from sidenote.cli import make_sample
-from sidenote.engine import OdtReview
+from sidenote.engine import OdtReview, open_review
 from sidenote.tui import DelLine, Line, ReviewApp, wrap_offsets
 
 needs_soffice = pytest.mark.skipif(
@@ -589,3 +589,70 @@ def test_status_bar_survives_long_filename(tmp_path):
             await pilot.press("q")
 
     asyncio.run(scenario())
+
+
+# ----------------------------------------------------------------------
+# Markdown documents
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def md_sample(tmp_path):
+    path = tmp_path / "sample.md"
+    make_sample(path)
+    return path
+
+
+def test_markdown_comment_leaves_the_document_untouched(md_sample):
+    before = md_sample.read_bytes()
+
+    async def scenario():
+        app = ReviewApp(md_sample, author="Richard")
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("j", "j", "v", *("l" * 7), "c")
+            await pilot.pause()
+            for ch in "check this":
+                await pilot.press(ch)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert len(app.comment_list) == 1
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+    assert md_sample.read_bytes() == before
+    review = open_review(md_sample)
+    (comment,) = review.comments()
+    assert comment.text == "check this"
+    assert comment.author == "Richard"
+    assert not comment.orphan
+
+
+def test_markdown_orphan_shows_in_the_sidebar(md_sample):
+    review = open_review(md_sample)
+    off = review.para_texts()[1].index("neurodevelopment")
+    review.add_comment((1, off), (1, off + 16), "spell out", author="R")
+    review.save()
+    # rewriting the whole paragraph removes the anchor and its context,
+    # replacing the word alone would just carry the comment across
+    md_sample.write_text(
+        md_sample.read_text().replace(
+            review.para_texts()[1],
+            "Folate status in pregnancy has been studied for decades.",
+        ),
+        encoding="utf-8",
+    )
+
+    async def scenario():
+        app = ReviewApp(md_sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            assert app.comment_list[0].orphan
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_markdown_export_fails_cleanly(md_sample):
+    review = open_review(md_sample)
+    with pytest.raises(RuntimeError, match="no docx export"):
+        review.export_docx()

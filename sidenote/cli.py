@@ -1,14 +1,21 @@
 """Command line interface for sidenote.
 
-sidenote FILE                 open the TUI (.odt or .docx)
+sidenote FILE                 open the TUI (.odt, .docx or .md)
 sidenote list FILE            list comments
+sidenote check FILE           report orphaned comments, nonzero on any
 sidenote changes FILE         list tracked changes
 sidenote add FILE ...         add a comment non-interactively
 sidenote export FILE          convert to docx via headless LibreOffice
-sidenote sample FILE          write a small sample ODT for testing
+sidenote sample FILE          write a small sample document for testing
 
 A .docx argument is converted to a sibling .odt working copy first. An
 existing working copy is reused when it is newer than the docx.
+
+Markdown is reviewed in place. Comments go to a sidecar JSON file
+beside the document and the markdown itself is never modified, so it
+stays a plain build input. Because the document can be edited outside
+sidenote, `check` is the hook-friendly way to catch a comment whose
+anchor text has been rewritten away.
 """
 
 from __future__ import annotations
@@ -17,12 +24,38 @@ import argparse
 import sys
 from pathlib import Path
 
-from sidenote.engine import OdtReview, docx_to_odt
+from sidenote.engine import MARKDOWN_SUFFIXES, docx_to_odt, open_review
 
-SUBCOMMANDS = ("view", "list", "add", "changes", "export", "sample")
+SUBCOMMANDS = ("view", "list", "check", "add", "changes", "export", "sample")
+
+
+SAMPLE_PARAGRAPHS = (
+    "Maternal folate intake during pregnancy has been linked to "
+    "offspring neurodevelopment in several cohort studies. The "
+    "evidence for dose-response relations remains inconsistent.",
+    "We used data from the NorthPop birth cohort to examine "
+    "self-reported folate intake in gestational week 20 and "
+    "language development at 18 months.",
+    "Intake was categorised in tertiles. Models were adjusted "
+    "for maternal age, education, pre-pregnancy BMI, and "
+    "smoking during pregnancy.",
+    "The middle tertile showed no association. The highest "
+    "tertile showed a weak positive association that did not "
+    "survive adjustment for education.",
+)
+
+
+def make_markdown_sample(path: Path) -> None:
+    body = "\n\n".join(("# Sample manuscript", *SAMPLE_PARAGRAPHS))
+    path.write_text(body + "\n", encoding="utf-8")
 
 
 def make_sample(path: Path) -> None:
+    """Write a sample document. Format follows the file suffix."""
+    if path.suffix.lower() in MARKDOWN_SUFFIXES:
+        make_markdown_sample(path)
+        return
+
     from odf.opendocument import OpenDocumentText
     from odf.style import Style, TextProperties
     from odf.text import H, P
@@ -33,46 +66,12 @@ def make_sample(path: Path) -> None:
     doc.automaticstyles.addElement(bold)
 
     doc.text.addElement(H(outlinelevel=1, text="Sample manuscript"))
-    doc.text.addElement(
-        P(
-            text=(
-                "Maternal folate intake during pregnancy has been linked to "
-                "offspring neurodevelopment in several cohort studies. The "
-                "evidence for dose-response relations remains inconsistent."
-            )
-        )
-    )
-    doc.text.addElement(
-        P(
-            text=(
-                "We used data from the NorthPop birth cohort to examine "
-                "self-reported folate intake in gestational week 20 and "
-                "language development at 18 months."
-            )
-        )
-    )
-    doc.text.addElement(
-        P(
-            text=(
-                "Intake was categorised in tertiles. Models were adjusted "
-                "for maternal age, education, pre-pregnancy BMI, and "
-                "smoking during pregnancy."
-            )
-        )
-    )
-    doc.text.addElement(
-        P(
-            text=(
-                "The middle tertile showed no association. The highest "
-                "tertile showed a weak positive association that did not "
-                "survive adjustment for education."
-            )
-        )
-    )
+    for para in SAMPLE_PARAGRAPHS:
+        doc.text.addElement(P(text=para))
     doc.save(str(path))
 
 
-def cmd_list(review: OdtReview) -> None:
+def cmd_list(review) -> None:
     texts = review.para_texts()
     comments = review.comments()
     if not comments:
@@ -89,10 +88,27 @@ def cmd_list(review: OdtReview) -> None:
         else:
             anchor = ""
             where = f"para {sp} @{so}"
-        print(f"[{i}] {c.author} {c.date} ({where})")
+        flag = " ORPHANED" if c.orphan else ""
+        print(f"[{i}] {c.author} {c.date} ({where}){flag}")
         if anchor:
             print(f"    anchor: {anchor!r}")
         print(f"    {c.text}")
+
+
+def cmd_check(review) -> int:
+    """Report anchor health. Nonzero exit when a comment is orphaned."""
+    status = getattr(review, "status", None)
+    if status is None:
+        print(f"{review.path.name}: anchors are stored in the document itself")
+        return 0
+    result = status()
+    print(f"{review.path.name}: {result.summary()}")
+    if not result.orphaned:
+        return 0
+    for i, c in enumerate(review.comments(), 1):
+        if c.orphan:
+            print(f"  [{i}] {c.author}: {c.text}")
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -112,6 +128,9 @@ def main(argv: list[str] | None = None) -> int:
     p_list = sub.add_parser("list", help="list comments")
     p_list.add_argument("file", type=Path)
 
+    p_check = sub.add_parser("check", help="report orphaned comments")
+    p_check.add_argument("file", type=Path)
+
     p_add = sub.add_parser("add", help="add a comment")
     p_add.add_argument("file", type=Path)
     p_add.add_argument("--para", type=int, required=True)
@@ -128,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     p_export.add_argument("file", type=Path)
     p_export.add_argument("--outdir", type=Path)
 
-    p_sample = sub.add_parser("sample", help="write a sample ODT")
+    p_sample = sub.add_parser("sample", help="write a sample document")
     p_sample.add_argument("file", type=Path)
 
     args = parser.parse_args(argv)
@@ -153,10 +172,16 @@ def main(argv: list[str] | None = None) -> int:
         ReviewApp(args.file, author=args.author).run()
         return 0
 
-    review = OdtReview(args.file)
+    try:
+        review = open_review(args.file)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     if args.command == "list":
         cmd_list(review)
+    elif args.command == "check":
+        return cmd_check(review)
     elif args.command == "changes":
         changes = review.changes()
         if not changes:
@@ -176,7 +201,11 @@ def main(argv: list[str] | None = None) -> int:
         kind = "ranged" if c.end > c.start else "point"
         print(f"added {kind} comment by {c.author}")
     elif args.command == "export":
-        target = review.export_docx(args.outdir)
+        try:
+            target = review.export_docx(args.outdir)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         print(f"wrote {target}")
     return 0
 

@@ -103,6 +103,11 @@ class Comment:
     start and end are (paragraph_index, offset) positions. A point
     comment has start == end. The node references are used internally
     for deletion.
+
+    orphan marks a comment whose anchor text could not be found, which
+    only happens for sidecar-backed formats where the document can be
+    edited outside sidenote. It is always False for ODT, where the
+    anchor is an element inside the document itself.
     """
 
     name: str | None
@@ -113,6 +118,7 @@ class Comment:
     end: Pos
     node: Element = field(repr=False, compare=False, default=None)
     end_node: Element | None = field(repr=False, compare=False, default=None)
+    orphan: bool = False
 
 
 @dataclass
@@ -549,3 +555,23 @@ class OdtReview:
         """Convert to docx with headless LibreOffice, return the new path."""
         out_dir = Path(out_dir) if out_dir else self.path.parent
         return _soffice_convert(self.path, "docx", out_dir)
+
+
+MARKDOWN_SUFFIXES = frozenset(
+    {".md", ".markdown", ".mdown", ".mkd", ".qmd", ".rmd"}
+)
+
+
+def open_review(path: str | Path):
+    """Open a document with the engine that fits its format.
+
+    Markdown goes to `MarkdownReview`, which keeps comments in a
+    sidecar file, everything else to `OdtReview`. Both expose the same
+    interface, so callers do not branch on format.
+    """
+    path = Path(path)
+    if path.suffix.lower() in MARKDOWN_SUFFIXES:
+        from sidenote.markdown import MarkdownReview
+
+        return MarkdownReview(path)
+    return OdtReview(path)

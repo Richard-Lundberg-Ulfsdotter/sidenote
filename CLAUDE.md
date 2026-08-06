@@ -1,21 +1,29 @@
 # sidenote — quick reference
 
-Terminal reviewer for ODT files with character-level comments, written as
-native ODF inline annotations. See README.md for usage and keys.
+Terminal reviewer for ODT and Markdown files with character-level comments.
+ODT comments are native ODF inline annotations, Markdown comments live in a
+sidecar JSON file. See README.md for usage and keys.
 
 ## Commands
 
 ```sh
 .venv/bin/python -m pytest tests/ -q      # run tests (includes soffice export)
 .venv/bin/sidenote sample /tmp/demo.odt # make a test document
+.venv/bin/sidenote sample /tmp/demo.md  # the markdown equivalent
 .venv/bin/sidenote /tmp/demo.odt        # open the TUI
+.venv/bin/sidenote check /tmp/demo.md   # orphan report, nonzero on any
 ```
 
 ## Design notes
 
 - Positions are `(paragraph_index, character_offset)` into the plain text
-  from `OdtReview.para_texts()`. Annotations are zero-width in that text,
+  from `para_texts()`. Annotations are zero-width in that text,
   so existing comments never shift offsets.
+- `engine.open_review()` returns `OdtReview` or `MarkdownReview` by file
+  suffix. Both expose the same interface (`para_texts`, `comments`,
+  `add_comment`, `update_comment`, `delete_comment`, `changes`, `save`,
+  `export_docx`), so no caller branches on format. Add a format by adding
+  a class with that interface, not by special-casing the TUI.
 - `engine._insert_at` splits text nodes and `text:s` runs at the offset.
   Ranged comments insert the `office:annotation-end` marker before the
   start element so the second insertion cannot invalidate the first.
@@ -35,6 +43,27 @@ native ODF inline annotations. See README.md for usage and keys.
 - The TUI never manipulates XML. It maps display lines back to engine
   positions (`ReviewApp.lines`) and reloads the document after every
   mutation. Keep new frontends on the same engine API.
+- Markdown. `markdown.split_blocks` makes paragraphs from blank-line
+  separated blocks, fenced code kept whole, source shown as written
+  rather than rendered so offsets match the file the user edits. The
+  `.md` is opened read-only and never written, everything goes to
+  `<stem>.sidenote.json`.
+- Markdown anchoring. The sidecar cannot move when the document is
+  edited elsewhere, so each endpoint stores `before`/`after` context
+  (`CONTEXT` = 40 chars) and is relocated by `_Anchor.locate` on load.
+  Exact position first, then a search for `before + after`, then one
+  side alone if it is at least `MIN_SOLO_CONTEXT` long. A phrase
+  replaced in place therefore carries its comment across, which
+  surprised two tests during development, see
+  `test_comment_follows_a_replaced_phrase`. Only losing both sides
+  orphans a comment. Orphans keep their stored anchor (`_recapture`
+  skips them) so they can re-attach if the text returns.
+- `Comment.orphan` is always False for ODT, where the anchor is an
+  element in the document. Only sidecar formats can orphan.
+- The sidecar stores a digest of the source. `status()` reports
+  totals, orphans, and whether the document moved since the last save.
+  The TUI notifies on mount via `_report_anchor_health`, `sidenote
+  check` prints the same and exits 1 on any orphan for use in hooks.
 - Performance model. `DocumentView` is a line-API `ScrollView`, its
   `render_line` styles only visible rows. The wrap layout is cached in
   `ReviewApp.lines` and rebuilt only by `rebuild_lines()` (resize,

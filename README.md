@@ -1,12 +1,17 @@
 # sidenote
 
-Review Word (docx) and LibreOffice (ODT) documents entirely from the keyboard. Add comments in a fast terminal UI.
+Review Word (docx), LibreOffice (ODT) and Markdown documents entirely from the keyboard. Add comments in a fast terminal UI.
 
-Read a document in a TUI, select any span of text and attach a comment. Comments are written as native ODF
+Read a document in a TUI, select any span of text and attach a comment. In
+Word and LibreOffice documents the comments are written as native ODF
 inline annotations (`office:annotation` + `office:annotation-end`), so they
 open as ordinary comments in LibreOffice. Export to docx goes through
 headless LibreOffice, which maps annotation ranges to real Word comment
 ranges (`commentRangeStart`/`commentRangeEnd`) that co-authors see in Word.
+
+Markdown works differently. The file is left exactly as it is and comments
+go to a sidecar JSON file beside it, so the document stays a plain build
+input that pandoc reads and git diffs line by line.
 
 No mouse required. Built for reviewing manuscripts on a laptop when for example traveling.
 
@@ -38,11 +43,15 @@ sidenote manuscript.odt              # open the TUI
 sidenote manuscript.docx             # docx works too, see below
 sidenote manuscript.odt --author "Richard Lundberg-Ulfsdotter"
 
+sidenote manuscript.md               # markdown too, see below
+
 sidenote list manuscript.odt         # print comments
+sidenote check manuscript.md         # report orphaned comments
 sidenote changes manuscript.odt      # print tracked changes
 sidenote add manuscript.odt --para 2 --start 10 --end 24 --text "..."
 sidenote export manuscript.odt       # write manuscript.docx next to it
 sidenote sample demo.odt             # generate a test document
+sidenote sample demo.md              # the same text as markdown
 ```
 
 The author name defaults to `$SIDENOTE_AUTHOR`, then the login name.
@@ -58,6 +67,39 @@ the working copy), it is reconverted and the old working copy is replaced.
 Exporting (`X` in the TUI, or the `export` subcommand) writes
 `<name>.docx` next to the file. When you opened a docx, that is the
 original file, so export means "write my comments back into the docx".
+
+### Markdown workflow
+
+Opening a `.md` (also `.markdown`, `.mkd`, `.qmd`, `.rmd`) reviews the file
+in place. Paragraphs are the blank-line separated blocks of the source,
+shown as they are written, with fenced code blocks kept whole. Comments go
+to `<name>.sidenote.json` next to the document. The markdown itself is never
+written to, which is the point when it feeds a build or lives under version
+control where comment churn would clutter prose diffs.
+
+Keep the two files together. The sidecar is named after the document, so
+moving or renaming the markdown means moving the sidecar with it, and
+committing both in one commit gives any past revision a matching set of
+prose and comments.
+
+Because the document can be edited outside sidenote, comments are re-found
+on open rather than trusting stored offsets. Each end of a comment records
+the surrounding wording, so inserting sections above, reflowing paragraphs
+and rewriting neighbouring sentences all leave the comment where it belongs,
+and a phrase replaced in place carries its comment across. Rewriting the
+anchored words together with their surroundings is the case that cannot be
+recovered. That comment is marked `orphaned` in the sidebar and kept at its
+last known position rather than dropped, and sidenote says so on open.
+
+`sidenote check` prints the same report and exits nonzero when anything is
+orphaned, which makes it usable as a pre-commit hook.
+
+```sh
+sidenote check manuscript.md || echo "a comment lost its anchor"
+```
+
+There is no docx export for markdown. The comments are for reading in the
+TUI and in `sidenote list`.
 
 ## Keys
 
@@ -85,7 +127,7 @@ original file, so export means "write my comments back into the docx".
 | `>` `<`        | jump to next/previous tracked change          |
 | `D`            | show/hide deleted text lines                  |
 | `tab`          | switch focus between document and sidebar     |
-| `X`            | export to docx (background)                   |
+| `X`            | export to docx (background, not for markdown) |
 | `?`            | help (scrolls with `j`/`k`, escape closes)    |
 | `escape`       | back to document / leave visual / clear search|
 | `q`            | quit                                          |
@@ -121,7 +163,8 @@ subcommand prints the same list in the terminal. Format-only changes
 are not shown, and accepting or rejecting changes stays in LibreOffice
 or Word.
 
-Comments save to the ODT immediately when added, edited, or deleted.
+Comments save immediately when added, edited, or deleted, to the ODT
+itself or to the markdown sidecar.
 The comment dialog quotes the full selected text (across paragraphs,
 capped at 600 characters) above a multi-line editor, enter inserts a
 newline, `ctrl+s` saves, escape cancels.
@@ -133,19 +176,27 @@ sidenote/
   engine.py   ODT model. Load, plain-text paragraphs, comment anchoring
               at (paragraph, character offset), edit/delete, save,
               docx import and export via headless LibreOffice.
+              `open_review()` picks the engine that fits the file.
+  markdown.py Markdown model, same interface. Blocks as paragraphs,
+              comments in a sidecar JSON file, anchors relocated by
+              their surrounding text when the document has moved.
   tui.py      Textual frontend. Vim navigation, visual selection,
               search, comment modal, sidebar, help. Keeps a
               display-line map back to engine positions. The document
               pane renders only visible lines, so navigation stays
               fast on long documents.
-  cli.py      Entry point. TUI plus list/add/export/sample subcommands.
+  cli.py      Entry point. TUI plus list/check/add/export/sample
+              subcommands.
 tests/
   test_engine.py   Round-trip tests including a soffice docx export
                    check that the comment survives as a Word comment.
+  test_markdown.py Sidecar round-trips and the re-anchoring cases,
+                   including that the markdown is never modified.
 ```
 
-The engine is deliberately frontend-agnostic. A future Neovim plugin can
-call the same `OdtReview` class (or the CLI) without touching the TUI.
+The engines are deliberately frontend-agnostic and share one interface, so
+the TUI and CLI never branch on file format. A future Neovim plugin can call
+`open_review()` (or the CLI) without touching the TUI.
 
 Key invariant. Annotation elements contribute zero width to the extracted
 plain text, so adding a comment never shifts the character offsets of the
@@ -161,6 +212,11 @@ elements) at the requested offset.
 - No editing of the document text, this is a reviewer, not an editor.
 - The docx round-trip goes through LibreOffice, so complex Word layout
   may shift slightly on export. Comments and text survive.
+- Markdown is shown as source, not rendered. Offsets then match the file
+  you edit, which is what anchoring needs.
+- Markdown comments cannot be exported to docx, and a markdown comment
+  whose anchor text and surrounding wording are both rewritten is marked
+  orphaned rather than relocated.
 
 ## Development
 

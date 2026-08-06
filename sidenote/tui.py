@@ -28,7 +28,7 @@ from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.widgets import Footer, Input, Label, ListItem, ListView, Static, TextArea
 
-from sidenote.engine import Comment, OdtReview, Pos, TrackedChange
+from sidenote.engine import Comment, Pos, TrackedChange, open_review
 
 WORD_RE = re.compile(r"[\wÀ-ɏ]+")
 
@@ -314,7 +314,7 @@ class ReviewApp(App):
         super().__init__()
         self.path = Path(path)
         self.author = author
-        self.review = OdtReview(self.path)
+        self.review = open_review(self.path)
         self.texts: list[str] = self.review.para_texts()
         self.comment_list: list[Comment] = self.review.comments()
         self.doc_changes: list[TrackedChange] = self.review.changes()
@@ -353,6 +353,26 @@ class ReviewApp(App):
         self.doc_view.focus()
         self.rebuild_lines()
         self._update_sidebar()
+        self._report_anchor_health()
+
+    def _report_anchor_health(self) -> None:
+        """Warn on open when sidecar anchors no longer fit the document."""
+        status = getattr(self.review, "status", None)
+        if status is None:
+            return
+        result = status()
+        if result.orphaned:
+            self.notify(
+                f"{result.orphaned} of {result.total} comments lost their "
+                "anchor text and are shown at their old position",
+                severity="warning",
+                timeout=8,
+            )
+        elif result.edited_elsewhere:
+            self.notify(
+                f"document edited since last save, {result.total} "
+                "comments re-anchored"
+            )
 
     # ------------------------------------------------------------------
     # Wrap cache and rendering
@@ -531,6 +551,8 @@ class ReviewApp(App):
                 head = f"[b]{i + 1}.[/b] [yellow]{escape(anchor)}[/yellow]"
             else:
                 head = f"[b]{i + 1}.[/b] [dim]para {sp + 1} note[/dim]"
+            if c.orphan:
+                head += " [red]orphaned[/red]"
             date = c.date[:10] if c.date else ""
             items.append(
                 ListItem(
@@ -1003,7 +1025,7 @@ class ReviewApp(App):
 
     def _after_mutation(self, message: str) -> None:
         keep = self.sidebar.index if self.focused is self.sidebar else None
-        self.review = OdtReview(self.path)
+        self.review = open_review(self.path)
         self.texts = self.review.para_texts()
         self.comment_list = self.review.comments()
         self.doc_changes = self.review.changes()
