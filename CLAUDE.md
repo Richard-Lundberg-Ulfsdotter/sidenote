@@ -88,7 +88,7 @@ sidecar JSON file. See README.md for usage and keys.
   `D`). The cursor and all offset math skip anything that is not a
   `Line`, so the invariant holds. Format-only regions are ignored.
 - The sidebar is a `SideList(ListView)`, fully keyboard-driven, and
-  the tracked-changes panel (`T`) is a second `SideList` instance.
+  the tracked-changes panel (`S`) is a second `SideList` instance.
   The two panels are mutually exclusive.
   `m`/`d` resolve their target via `_target_comment()` (sidebar
   selection when focused, else document cursor).
@@ -103,6 +103,22 @@ sidecar JSON file. See README.md for usage and keys.
   `_move_divider`, which writes `styles.width` on both panels (the
   shared `panel_width`) and lets `DocumentView.on_resize` rewrap. The
   CSS literal `44` must stay in sync with `PANEL_WIDTH`.
+- Multi-key motions. `pending_find` (`f`/`F`/`t`/`T`) and
+  `pending_object` (`a`/`i`) hold the first key and the next `on_key`
+  consumes the second, like `pending_g`/`pending_z`. Each swallows one
+  key unconditionally (escape aborts) so a stray `i` cannot leak into a
+  binding. `f`/`t` search the paragraph, not the display line, because
+  the wrap moves with the pane width. `last_find` backs `;`/`,`,
+  reversed through `FIND_REVERSE`.
+- Text objects (`iw aw is as ip ap`) go through `_text_object`, which
+  sets a visual selection rather than driving an operator. From normal
+  mode it sets both ends. In visual mode the anchor stands and only
+  `cur` extends, matching `v` then `as` in vim. `sentence_spans` is
+  vim's rule, `.!?` plus closing brackets or quotes, then whitespace or
+  end of paragraph. It returns `(start, body_end, end)`, the third
+  field being what separates `as` from `is`.
+- The panels are `s` (comments) and `S` (changes). They moved off
+  `t`/`T` when those became the till motions, do not move them back.
 - `render_line` strips must be padded to the pane width with the
   widget's `rich_style` (`adjust_cell_length`), otherwise the area
   after the text paints in the terminal default background.

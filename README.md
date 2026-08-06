@@ -108,6 +108,10 @@ TUI and in `sidenote list`.
 | `j` `k`        | move down/up one display line                 |
 | `h` `l`        | move left/right one character                 |
 | `w` `b` `e`    | word start forward/back, word end             |
+| `f` `F` + char | jump to next/previous char in the paragraph   |
+| `t` `T` + char | jump to just before/after it                  |
+| `;` `,`        | repeat the last `f`/`t`, forward/backward     |
+| `(` `)`        | previous/next sentence                        |
 | `0` `$`        | start/end of display line                     |
 | `{` `}`        | previous/next paragraph                       |
 | `gg` `G`       | first/last paragraph                          |
@@ -115,6 +119,9 @@ TUI and in `sidenote list`.
 | `ctrl+e/y`     | scroll view one line (cursor stays)           |
 | `zz` `zt` `zb` | cursor line to center/top/bottom              |
 | `v`            | toggle visual mode (character-level select)   |
+| `is` `as`      | select the sentence, without/with its space   |
+| `iw` `aw`      | select the word, without/with its space       |
+| `ip` `ap`      | select the whole paragraph                    |
 | `c`            | comment on selection, or point note at cursor |
 | `m`            | edit comment (cursor or sidebar selection)    |
 | `d`            | delete comment (cursor or sidebar selection)  |
@@ -122,8 +129,8 @@ TUI and in `sidenote list`.
 | `/`            | search (smartcase)                            |
 | `n` `N`        | next/previous search match (wraps)            |
 | `*` `#`        | search word under cursor forward/backward     |
-| `t`            | open and focus comments sidebar / close it    |
-| `T`            | open and focus tracked-changes panel / close  |
+| `s`            | open and focus comments sidebar / close it    |
+| `S`            | open and focus tracked-changes panel / close  |
 | `>` `<`        | jump to next/previous tracked change          |
 | `D`            | show/hide deleted text lines                  |
 | `tab`          | switch focus between document and sidebar     |
@@ -132,6 +139,16 @@ TUI and in `sidenote list`.
 | `?`            | help (scrolls with `j`/`k`, escape closes)    |
 | `escape`       | back to document / leave visual / clear search|
 | `q`            | quit                                          |
+
+`f` and `t` search the paragraph rather than the display line, since the
+line breaks are only wrapping and move when the pane is resized. The
+sentence rule is vim's, a `.`, `!` or `?` with any closing brackets or
+quotes after it, then whitespace or the end of the paragraph. Text
+objects work from normal mode as well as from visual mode, so `as`
+selects the sentence around the cursor and `c` comments on it. In visual
+mode the anchor stays put and only the cursor end moves, so `v` then `as`
+grows the selection to the end of the sentence. `ip` and `ap` both take
+the whole paragraph, there being no blank lines to include.
 
 Everything is keyboard-driven, no mouse needed. When the sidebar is
 focused, `j`/`k`/`g`/`G` move the selection, enter jumps to the
@@ -168,7 +185,7 @@ woven in at the spot it was removed (`D` hides and shows them), and a
 red underline marks the deletion point in the running text. The
 deleted lines are display-only, the cursor skips them and comments
 cannot anchor there. The status bar names the change's author when the
-cursor is on one, including the deleted text for deletions. `T` opens
+cursor is on one, including the deleted text for deletions. `S` opens
 a panel listing every insertion and deletion with author, date, and
 the affected text, enter jumps to its place in the document, and
 `>`/`<` step through changes without the panel. The `changes`
@@ -199,8 +216,8 @@ sidenote/
   markdown.py Markdown model, same interface. Blocks as paragraphs,
               comments in a sidecar JSON file, anchors relocated by
               their surrounding text when the document has moved.
-  tui.py      Textual frontend. Vim navigation, visual selection,
-              search, comment modal, sidebar, help. Keeps a
+  tui.py      Textual frontend. Vim navigation, text objects, visual
+              selection, search, comment modal, sidebar, help. Keeps a
               display-line map back to engine positions. The document
               pane renders only visible lines, so navigation stays
               fast on long documents.

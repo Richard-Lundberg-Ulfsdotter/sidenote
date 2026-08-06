@@ -14,6 +14,9 @@ from sidenote.tui import (
     DelLine,
     Line,
     ReviewApp,
+    sentence_at,
+    sentence_spans,
+    word_object,
     wrap_offsets,
 )
 
@@ -145,6 +148,144 @@ def test_vim_motions(sample):
     asyncio.run(scenario())
 
 
+def test_sentence_spans_and_word_object():
+    text = "One sentence here. A second one! And a third?"
+    spans = sentence_spans(text)
+    assert [text[s:b] for s, b, _ in spans] == [
+        "One sentence here.",
+        "A second one!",
+        "And a third?",
+    ]
+    # the trailing space belongs to `as`, not `is`
+    assert text[spans[0][0]:spans[0][2]] == "One sentence here. "
+    assert sentence_at(text, 5) == spans[0]
+    assert sentence_at(text, 20) == spans[1]
+    # a paragraph with no terminator is one sentence
+    assert sentence_spans("no full stop") == [(0, 12, 12)]
+    assert sentence_spans("") == [(0, 0, 0)]
+
+    assert word_object(text, 5, around=False) == (4, 12)  # "sentence"
+    assert word_object(text, 5, around=True) == (4, 13)  # plus its space
+    # no space to the right, so `aw` takes the one on the left
+    assert text[39:44] == "third"
+    assert word_object(text, 43, around=True) == (38, 44)
+
+
+def test_find_char_motions(sample):
+    async def scenario():
+        app = ReviewApp(sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("}")
+            text = app.texts[1]
+            first = text.index("f")
+            second = text.index("f", first + 1)
+            # f jumps onto the character, in this paragraph only
+            await pilot.press("f", "f")
+            assert app.cur == (1, first)
+            # ; repeats, , goes back
+            await pilot.press(";")
+            assert app.cur == (1, second)
+            await pilot.press(",")
+            assert app.cur == (1, first)
+            # t stops one short of the next one
+            await pilot.press("t", "f")
+            assert app.cur == (1, second - 1)
+            # F searches backwards, T stops one after
+            await pilot.press("F", "f")
+            assert app.cur == (1, first)
+            # $ stops at the end of the display line, T searches back from there
+            await pilot.press("$")
+            eol = app.cur[1]
+            await pilot.press("T", "f")
+            assert app.cur == (1, text.rfind("f", 0, eol - 1) + 1)
+            # a character that is not in the paragraph leaves the cursor
+            before = app.cur
+            await pilot.press("f", "~")
+            assert app.cur == before
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_sentence_motions(sample):
+    async def scenario():
+        app = ReviewApp(sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("}")
+            second = sentence_spans(app.texts[1])[1][0]
+            await pilot.press(")")
+            assert app.cur == (1, second)
+            # from the last sentence, ) crosses into the next paragraph
+            await pilot.press(")")
+            assert app.cur == (2, 0)
+            # ( walks back the same way
+            await pilot.press("(")
+            assert app.cur == (1, second)
+            # mid-sentence, ( goes to the start of that sentence first
+            await pilot.press("w", "w")
+            await pilot.press("(")
+            assert app.cur == (1, second)
+            await pilot.press("(")
+            assert app.cur == (1, 0)
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_text_objects_select_for_commenting(sample):
+    async def scenario():
+        app = ReviewApp(sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("}", "w", "w")
+            start, body_end, end = sentence_at(app.texts[1], app.cur[1])
+            # is selects the sentence, as takes the trailing space too
+            await pilot.press("i", "s")
+            assert app.anchor == (1, start)
+            assert app.cur == (1, body_end - 1)
+            await pilot.press("escape")
+            await pilot.press("a", "s")
+            assert app.cur == (1, end - 1)
+            await pilot.press("escape")
+            # iw and ip work the same way
+            await pilot.press("i", "w")
+            lo, hi = word_object(app.texts[1], app.cur[1], around=False)
+            assert app.anchor == (1, lo)
+            await pilot.press("escape")
+            await pilot.press("i", "p")
+            assert app.anchor == (1, 0)
+            assert app.cur == (1, len(app.texts[1]) - 1)
+            await pilot.press("escape")
+            # a sentence object then c comments on exactly that sentence
+            await pilot.press("{")
+            await pilot.press("i", "s", "c")
+            await pilot.pause()
+            for ch in "unclear":
+                await pilot.press(ch)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            comment = app.comment_list[0]
+            assert comment.start == (1, 0)
+            assert app.texts[1][comment.start[1]:comment.end[1]] == (
+                app.texts[1][:body_end]
+            )
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_visual_mode_extends_to_the_object(sample):
+    async def scenario():
+        app = ReviewApp(sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("}", "v", "a", "s")
+            # the anchor stays where v was pressed, the cursor extends
+            assert app.anchor == (1, 0)
+            assert app.cur == (1, sentence_spans(app.texts[1])[0][2] - 1)
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
 def test_search(sample):
     async def scenario():
         app = ReviewApp(sample)
@@ -267,8 +408,8 @@ def test_sidebar_keyboard(sample):
     async def scenario():
         app = ReviewApp(sample)
         async with app.run_test(size=(100, 30)) as pilot:
-            # t opens and focuses the sidebar
-            await pilot.press("t")
+            # s opens and focuses the sidebar
+            await pilot.press("s")
             await pilot.pause()
             await pilot.pause()
             assert app.focused is app.sidebar
@@ -287,10 +428,10 @@ def test_sidebar_keyboard(sample):
             await pilot.pause()
             await pilot.pause()
             assert [c.text for c in app.comment_list] == ["second"]
-            # escape returns focus to the document, t closes the sidebar
+            # escape returns focus to the document, s closes the sidebar
             await pilot.press("escape")
             assert app.focused is app.doc_view
-            await pilot.press("t")
+            await pilot.press("s")
             await pilot.pause()
             assert not app.sidebar.has_class("visible")
             await pilot.press("q")
@@ -309,7 +450,7 @@ def test_sidebar_follows_the_cursor(sample):
     async def scenario():
         app = ReviewApp(sample)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.press("t")
+            await pilot.press("s")
             await pilot.pause()
             await pilot.pause()
             await pilot.press("escape")
@@ -349,7 +490,7 @@ def test_ctrl_arrows_move_the_divider(sample):
             # closed panel, the divider does not move
             await pilot.press("ctrl+left")
             assert app.panel_width == PANEL_WIDTH
-            await pilot.press("t")
+            await pilot.press("s")
             await pilot.pause()
             await pilot.pause()
             doc_width = app.doc_view.size.width
@@ -381,7 +522,7 @@ def test_ctrl_arrows_move_the_divider(sample):
             assert app.panel_width == PANEL_MIN_WIDTH
             # the changes panel keeps the width the user chose
             await pilot.press("escape")
-            await pilot.press("T")
+            await pilot.press("S")
             await pilot.pause()
             await pilot.pause()
             assert app.changes_panel.outer_size.width == PANEL_MIN_WIDTH
@@ -418,7 +559,7 @@ def test_sidebar_author_filter(sample):
     async def scenario():
         app = ReviewApp(sample)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.press("t")
+            await pilot.press("s")
             await pilot.pause()
             await pilot.pause()
             assert len(app.sidebar) == 3
@@ -465,7 +606,7 @@ def test_sidebar_filter_matches_text(sample):
     async def scenario():
         app = ReviewApp(sample)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.press("t")
+            await pilot.press("s")
             await pilot.pause()
             await pilot.pause()
             # a word from the comment body matches, regardless of author
@@ -495,7 +636,7 @@ def test_sidebar_search_commands(sample):
     async def scenario():
         app = ReviewApp(sample)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.press("t")
+            await pilot.press("s")
             await pilot.pause()
             await pilot.pause()
             assert app.sidebar.index == 0
@@ -535,7 +676,7 @@ def test_sidebar_filter_no_match(sample):
     async def scenario():
         app = ReviewApp(sample)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.press("t")
+            await pilot.press("s")
             await pilot.pause()
             await pilot.pause()
             await pilot.press("slash")
@@ -603,7 +744,7 @@ def test_changes_panel(tracked_sample):
     async def scenario():
         app = ReviewApp(tracked_sample)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.press("T")
+            await pilot.press("S")
             await pilot.pause()
             await pilot.pause()
             await pilot.pause()
@@ -615,10 +756,10 @@ def test_changes_panel(tracked_sample):
             assert app.cur == (1, 6)
             assert app.focused is app.doc_view
             # panels are mutually exclusive
-            await pilot.press("T")
+            await pilot.press("S")
             await pilot.pause()
             await pilot.pause()
-            await pilot.press("t")
+            await pilot.press("s")
             await pilot.pause()
             assert not app.changes_panel.has_class("visible")
             assert app.sidebar.has_class("visible")

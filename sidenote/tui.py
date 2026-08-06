@@ -33,6 +33,11 @@ from textual.widgets import Footer, Input, Label, ListItem, ListView, Static, Te
 from sidenote.engine import Comment, Pos, TrackedChange, open_review
 
 WORD_RE = re.compile(r"[\wÀ-ɏ]+")
+# vim's sentence rule. . ! or ? then any closing brackets or quotes,
+# followed by whitespace or the end of the paragraph.
+SENTENCE_END_RE = re.compile(r"[.!?][)\]\"'’”]*(?=\s|$)")
+# f/F/t/T reversed, for ,
+FIND_REVERSE = {"f": "F", "F": "f", "t": "T", "T": "t"}
 
 STYLE_COMMENT = "underline yellow"
 STYLE_SEARCH = "black on green"
@@ -53,6 +58,10 @@ HELP_TEXT = """\
 [b]Movement[/b]
   j k h l        line down/up, char left/right
   w b e          word start forward/back, word end
+  f F {ch}       jump to next/previous {ch} in the paragraph
+  t T {ch}       stop just before/after it
+  ; ,            repeat the last f/F/t/T, forward/back
+  ( )            previous/next sentence
   0 $            start/end of display line
   { }            previous/next paragraph
   gg G           first/last paragraph
@@ -62,11 +71,14 @@ HELP_TEXT = """\
 
 [b]Comments[/b]
   v              visual mode (character-level selection)
+  is as          select sentence, without/with trailing space
+  iw aw          select word, without/with trailing space
+  ip ap          select the whole paragraph
   c              comment on selection, or point note at cursor
   m              edit comment under cursor
   d              delete comment under cursor
   ] \\[            jump to next/previous comment
-  t              open and focus comments sidebar / close it
+  s              open and focus comments sidebar / close it
   ctrl+left/right move the divider, resizing panel and text
   With the sidebar open, the cursor moving onto commented
   text highlights that comment in the panel.
@@ -82,7 +94,7 @@ HELP_TEXT = """\
   tab            back to the document
 
 [b]Tracked changes[/b]
-  T              open and focus changes panel / close it
+  S              open and focus changes panel / close it
   > <            jump to next/previous tracked change
   D              show/hide deleted text lines
   Insertions show green. Deleted text appears as red
@@ -141,6 +153,66 @@ def wrap_offsets(text: str, width: int) -> list[tuple[int, int]]:
             spans.append((seg_start + pos, seg_start + pos + cut))
             pos += cut
     return spans or [(0, 0)]
+
+
+def sentence_spans(text: str) -> list[tuple[int, int, int]]:
+    """Split a paragraph into sentences.
+
+    Returns (start, body_end, end) per sentence, covering the whole
+    text. body_end stops at the terminator, end includes the trailing
+    whitespace, which is the difference between `is` and `as`.
+    """
+    spans: list[tuple[int, int, int]] = []
+    start = 0
+    for m in SENTENCE_END_RE.finditer(text):
+        if m.end() <= start:
+            continue
+        end = m.end()
+        while end < len(text) and text[end].isspace():
+            end += 1
+        spans.append((start, m.end(), end))
+        start = end
+    if start < len(text):
+        spans.append((start, len(text), len(text)))
+    return spans or [(0, 0, 0)]
+
+
+def sentence_at(text: str, offset: int) -> tuple[int, int, int]:
+    """The sentence containing offset. Clamps past the end of the text."""
+    spans = sentence_spans(text)
+    for span in spans:
+        if span[0] <= offset < span[2]:
+            return span
+    return spans[-1]
+
+
+def word_object(text: str, offset: int, around: bool) -> tuple[int, int]:
+    """vim iw/aw. The word at offset, or the run of non-word characters.
+
+    `around` takes the trailing whitespace with it, or the leading
+    whitespace when there is none to the right, as vim does.
+    """
+    for m in WORD_RE.finditer(text):
+        if m.start() <= offset < m.end():
+            lo, hi = m.start(), m.end()
+            break
+    else:
+        lo, hi = offset, min(offset + 1, len(text))
+        while lo > 0 and not WORD_RE.match(text[lo - 1]):
+            lo -= 1
+        while hi < len(text) and not WORD_RE.match(text[hi]):
+            hi += 1
+        return lo, hi
+    if around:
+        pad = hi
+        while pad < len(text) and text[pad] in " \t":
+            pad += 1
+        if pad > hi:
+            hi = pad
+        else:
+            while lo > 0 and text[lo - 1] in " \t":
+                lo -= 1
+    return lo, hi
 
 
 def _split_hard_lines(text: str) -> list[tuple[int, str]]:
@@ -320,8 +392,8 @@ class ReviewApp(App):
         Binding("m", "edit_comment", "edit"),
         Binding("d", "delete_comment", "delete"),
         Binding("slash", "search", "search"),
-        Binding("t", "toggle_sidebar", "comments"),
-        Binding("T", "toggle_changes", "changes"),
+        Binding("s", "toggle_sidebar", "comments"),
+        Binding("S", "toggle_changes", "changes"),
         Binding("X", "export", "docx"),
         Binding("question_mark", "help", "help"),
         Binding("escape", "clear_transient", show=False),
@@ -343,6 +415,9 @@ class ReviewApp(App):
         self.goal_col = 0
         self.pending_g = False
         self.pending_z = False
+        self.pending_find = ""
+        self.pending_object = ""
+        self.last_find: tuple[str, str] | None = None
         self.lines: list[Line | None] = []
         self._para_line_start: list[int] = []
         self.search_query = ""
@@ -784,6 +859,70 @@ class ReviewApp(App):
                     self.cur = (i, last)
                     return
 
+    def _find_char(self, cmd: str, target: str) -> None:
+        """vim f/F/t/T. Searches within the paragraph, as vim does a line."""
+        p, o = self.cur
+        text = self.texts[p]
+        if cmd in ("f", "t"):
+            idx = text.find(target, o + (2 if cmd == "t" else 1))
+            hit = idx - 1 if cmd == "t" else idx
+        else:
+            stop = o - (1 if cmd == "T" else 0)
+            idx = text.rfind(target, 0, max(stop, 0))
+            hit = idx + 1 if cmd == "T" else idx
+        if idx == -1:
+            self.notify(
+                f"{escape(target)!r} not found in this paragraph",
+                severity="warning",
+            )
+            return
+        self.cur = (p, hit)
+        self.goal_col = self._col_in_line()
+
+    def _repeat_find(self, reverse: bool) -> None:
+        """vim ; and , repeat the last f/F/t/T, optionally flipped."""
+        if self.last_find is None:
+            return
+        cmd, target = self.last_find
+        self._find_char(FIND_REVERSE[cmd] if reverse else cmd, target)
+
+    def _sentence_jump(self, forward: bool) -> None:
+        """vim ( and ). Paragraph boundaries also end a sentence."""
+        p, o = self.cur
+        span = range(p, len(self.texts)) if forward else range(p, -1, -1)
+        for i in span:
+            starts = [s for s, _, _ in sentence_spans(self.texts[i])]
+            if forward:
+                hits = [s for s in starts if i > p or s > o]
+            else:
+                hits = [s for s in starts if i < p or s < o]
+            if hits:
+                target = hits[0] if forward else hits[-1]
+                self.cur = (i, min(target, self._max_off(i)))
+                self.goal_col = self._col_in_line()
+                return
+
+    def _text_object(self, kind: str, around: bool) -> None:
+        """vim iw/aw, is/as, ip/ap. Selects the object into visual mode.
+
+        In visual mode the existing anchor stands and only the cursor
+        end extends, so `v` then `as` grows the selection to the end of
+        the sentence, as in vim.
+        """
+        p, o = self.cur
+        text = self.texts[p]
+        if kind == "p":
+            lo, hi = 0, len(text)
+        elif kind == "s":
+            start, body_end, end = sentence_at(text, o)
+            lo, hi = start, end if around else body_end
+        else:
+            lo, hi = word_object(text, o, around)
+        if self.anchor is None:
+            self.anchor = (p, lo)
+        self.cur = (p, min(max(hi - 1, 0), self._max_off(p)))
+        self.goal_col = self._col_in_line()
+
     def _para_jump(self, forward: bool) -> None:
         p, o = self.cur
         if forward:
@@ -898,6 +1037,21 @@ class ReviewApp(App):
                 self._repaint()
                 event.stop()
             return
+        if self.pending_find:
+            cmd, self.pending_find = self.pending_find, ""
+            if ch and key != "escape":
+                self.last_find = (cmd, ch)
+                self._find_char(cmd, ch)
+                self._repaint()
+            event.stop()
+            return
+        if self.pending_object:
+            scope, self.pending_object = self.pending_object, ""
+            if ch in ("w", "s", "p"):
+                self._text_object(ch, around=scope == "a")
+                self._repaint()
+            event.stop()
+            return
         if self.pending_z:
             self.pending_z = False
             height = self.doc_view.size.height or 24
@@ -930,6 +1084,22 @@ class ReviewApp(App):
             self._word_jump(forward=False)
         elif ch == "e":
             self._word_end_jump()
+        elif ch in FIND_REVERSE:
+            self.pending_find = ch
+            event.stop()
+            return
+        elif ch in ("a", "i"):
+            self.pending_object = ch
+            event.stop()
+            return
+        elif ch == ";":
+            self._repeat_find(reverse=False)
+        elif ch == ",":
+            self._repeat_find(reverse=True)
+        elif ch == "(":
+            self._sentence_jump(forward=False)
+        elif ch == ")":
+            self._sentence_jump(forward=True)
         elif ch == "0":
             line = self.lines[self._cursor_line()]
             if line:
