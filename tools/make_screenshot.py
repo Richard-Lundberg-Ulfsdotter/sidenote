@@ -27,8 +27,9 @@ from sidenote.tui import ReviewApp
 
 OUT = Path(__file__).resolve().parent.parent / "docs" / "screenshot.svg"
 
-# 110x30 cells. The document pane keeps 110 - PANEL_WIDTH columns.
-SIZE = (110, 30)
+# 120x30 cells, wide enough for the whole footer. The document pane
+# keeps 120 - PANEL_WIDTH columns.
+SIZE = (120, 30)
 # fixed so regenerating does not churn the dates in the diff
 DATE = "2026-07-07T09:14:00"
 # (paragraph, start, end, author, text) for the two sidebar entries

@@ -12,6 +12,7 @@ sidecar JSON file. See README.md for usage and keys.
 .venv/bin/sidenote sample /tmp/demo.md  # the markdown equivalent
 .venv/bin/sidenote /tmp/demo.odt        # open the TUI
 .venv/bin/sidenote check /tmp/demo.md   # orphan report, nonzero on any
+.venv/bin/sidenote /tmp/paper.md --refcheck ref-check.md  # r overlay
 ```
 
 ## Design notes
@@ -124,6 +125,19 @@ sidecar JSON file. See README.md for usage and keys.
   `.!?` plus closing brackets or quotes, then whitespace or end of
   paragraph. It returns `(start, body_end, end)`, the third field
   being what separates `as` from `is`.
+- Reference overlay. `r` reads `reference-check.md` (found beside the
+  document, up to `SEARCH_PARENTS` levels up, or `--refcheck` /
+  `$SIDENOTE_REFCHECK`) and shows the table rows citing the key under
+  the cursor. `refcheck.parse_entries` identifies columns by header
+  name, not position, and indexes a row under every key it names, so
+  the file's own layout can drift. The file is re-read on every `r`,
+  it is small and hand-edited during review. `citations_at` returns
+  the whole bracket group so `[@a; @b]` steps with `n`/`N`, the key
+  under the cursor first. `o` shells out to `xdg-open`
+  (`$SIDENOTE_PDF_VIEWER`) detached, PDFs named `<key>.pdf` in the
+  directory the check file documents. Do not name a `ModalScreen`
+  method `_render`, that is Textual's own and overriding it breaks
+  painting with a bare `AttributeError` in the compositor.
 - The panels are `s` (comments) and `S` (changes). They moved off
   `t`/`T` when those became the till motions, do not move them back.
 - `render_line` strips must be padded to the pane width with the
@@ -147,4 +161,6 @@ sidecar JSON file. See README.md for usage and keys.
   rule, sets the terminal group to `translate(0, 0)`, and measures the
   content box off the SVG itself (width from the per-line clip rects,
   height from the painted cell rects, which unlike the clip rects
-  include the footer row). 1342x734 for 30 rows.
+  include the footer row). 1464x734 for 30 rows at 120 columns. The
+  capture is 120 wide because the footer stopped fitting at 110 when
+  `r` was added, and a truncated footer in the picture looks broken.

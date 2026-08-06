@@ -44,6 +44,7 @@ sidenote manuscript.docx             # docx works too, see below
 sidenote manuscript.odt --author "Richard Lundberg-Ulfsdotter"
 
 sidenote manuscript.md               # markdown too, see below
+sidenote manuscript.md --refcheck ../reference-check.md
 
 sidenote list manuscript.odt         # print comments
 sidenote check manuscript.md         # report orphaned comments
@@ -126,6 +127,7 @@ TUI and in `sidenote list`.
 | `m`            | edit comment (cursor or sidebar selection)    |
 | `d`            | delete comment (cursor or sidebar selection)  |
 | `]` `[`        | jump to next/previous comment                 |
+| `r`            | reference for the citation under the cursor   |
 | `/`            | search (smartcase)                            |
 | `n` `N`        | next/previous search match (wraps)            |
 | `*` `#`        | search word under cursor forward/backward     |
@@ -179,6 +181,55 @@ Search matches highlight in green with the current match in orange, and
 the status bar shows the match position (`/folate 2/5`). `*`/`#` use
 whole-word matching, as in vim.
 
+### Reference check
+
+A manuscript written for pandoc carries its citations as keys,
+`[@blomhoffNordicNutritionRecommendations2023]`. Put a `reference-check.md`
+beside the document and `r` opens an overlay with what that file says about
+the citation under the cursor, so the claim can be checked against its
+source without leaving the review.
+
+The file is an ordinary Markdown pipe table, one row per citation, with
+columns for the statement, the reference key, the supporting quote and a
+status. Columns are matched by name rather than position, so extra columns
+and different section headings are fine.
+
+```markdown
+## 1. Introduction
+
+| Statement                       | Reference                        | Supporting quote                      | Status |
+|:--------------------------------|:---------------------------------|:--------------------------------------|:-------|
+| Folate reduces neural tube risk | bjorke-monsenFolateScoping2023   | "prevents most cases of spina bifida" | OK     |
+| Energy cutoffs are standard     | liMaternalDiet2024; yangDiet2022 | "less than 500 kcal/day"              | OK     |
+```
+
+A row naming two keys is found under both.
+
+The overlay shows every row citing that key, so a source used in two places
+is checked in one view. Inside a grouped citation like `[@a2020; @b2021]`
+the cursor anywhere in the brackets reaches all the keys and `n`/`N` step
+between them. `o` opens the full-text PDF, `j`/`k` scroll, escape closes.
+The file is re-read on every `r`, so a row added in another window shows up
+without reopening the document.
+
+sidenote looks for `reference-check.md` beside the document and up to two
+directories above it, `--refcheck` names one explicitly, and
+`$SIDENOTE_REFCHECK` sets it for good.
+
+The full texts are found by citation key, `<key>.pdf`. The directory comes
+from the check file itself when it documents one, as in
+
+```markdown
+- Full texts: `/home/richard/research/references/<key>.pdf`
+```
+
+otherwise from `$SIDENOTE_REFERENCES`, otherwise from
+`~/research/references`. `$SIDENOTE_PDF_VIEWER` replaces `xdg-open` for
+anyone who wants a particular reader.
+
+None of this is required. Without a check file the `r` key just says so,
+and everything else works as before.
+
 ### Tracked changes
 
 Documents with Word tracked changes show them read-only. Inserted text
@@ -223,6 +274,9 @@ sidenote/
               display-line map back to engine positions. The document
               pane renders only visible lines, so navigation stays
               fast on long documents.
+  refcheck.py Reads a manuscript's reference-check.md, indexes its
+              table rows by citation key, and locates the full-text
+              PDFs. Optional, absent for most documents.
   cli.py      Entry point. TUI plus list/check/add/export/sample
               subcommands.
 tests/
@@ -230,6 +284,8 @@ tests/
                    check that the comment survives as a Word comment.
   test_markdown.py Sidecar round-trips and the re-anchoring cases,
                    including that the markdown is never modified.
+  test_refcheck.py Table parsing and citation detection under the
+                   cursor, including grouped citations.
 ```
 
 The engines are deliberately frontend-agnostic and share one interface, so
@@ -255,6 +311,9 @@ elements) at the requested offset.
 - Markdown comments cannot be exported to docx, and a markdown comment
   whose anchor text and surrounding wording are both rewritten is marked
   orphaned rather than relocated.
+- The reference overlay reads a hand-maintained check file, not the
+  bibliography. It reports what that file says, and says nothing about
+  whether the file is up to date with the manuscript.
 
 ## Development
 

@@ -4,6 +4,8 @@ import asyncio
 import shutil
 
 import pytest
+from textual.widgets import Static
+
 from sidenote.cli import make_sample
 from sidenote.engine import OdtReview, open_review
 from sidenote.tui import (
@@ -306,6 +308,10 @@ def test_pending_keys_do_not_fire_their_bindings(sample):
             await pilot.press("f", "S")
             await pilot.pause()
             assert not app.changes_panel.has_class("visible")
+            # r, the reference overlay, must not open as an f target
+            await pilot.press("f", "r")
+            await pilot.pause()
+            assert len(app.screen_stack) == 1
             await pilot.press("q")
 
     asyncio.run(scenario())
@@ -924,3 +930,153 @@ def test_markdown_export_fails_cleanly(md_sample):
     review = open_review(md_sample)
     with pytest.raises(RuntimeError, match="no docx export"):
         review.export_docx()
+
+
+# ----------------------------------------------------------------------
+# Reference overlay
+# ----------------------------------------------------------------------
+
+
+REFERENCE_CHECK = """\
+# Reference check
+
+- Full texts: `{refs}/<key>.pdf`
+
+## 1. Introduction
+
+| Statement                | Reference                                | Supporting quote        | Status |
+|:-------------------------|:-----------------------------------------|:------------------------|:-------|
+| Folate and neural tubes  | bjorkeFolate2023                         | "prevents most cases"   | OK     |
+| Early insults last       | barkerFetal1990; lucasFetalOrigins1999   | "lifetime consequences" | FIXED  |
+"""
+
+
+@pytest.fixture
+def cited(tmp_path):
+    """A markdown document with citations and a reference-check beside it."""
+    refs = tmp_path / "references"
+    refs.mkdir()
+    (refs / "bjorkeFolate2023.pdf").write_bytes(b"%PDF-1.4\n")
+    (tmp_path / "reference-check.md").write_text(
+        REFERENCE_CHECK.format(refs=refs), encoding="utf-8"
+    )
+    path = tmp_path / "manuscript.md"
+    path.write_text(
+        "# Paper\n\n"
+        "Folate reduces neural tube defect risk [@bjorkeFolate2023].\n\n"
+        "Early insults have lifetime consequences "
+        "[@barkerFetal1990; @lucasFetalOrigins1999].\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _overlay_text(app) -> str:
+    return str(app.screen.query_one("#reference-body", Static).content)
+
+
+def test_reference_overlay_shows_the_row(cited, monkeypatch):
+    monkeypatch.delenv("SIDENOTE_REFCHECK", raising=False)
+
+    async def scenario():
+        app = ReviewApp(cited)
+        async with app.run_test(size=(100, 30)) as pilot:
+            app.cur = (1, app.texts[1].index("bjorke"))
+            await pilot.press("r")
+            await pilot.pause()
+            assert len(app.screen_stack) > 1
+            body = _overlay_text(app)
+            assert "bjorkeFolate2023" in body
+            assert "Folate and neural tubes" in body
+            assert "prevents most cases" in body
+            assert "1. Introduction" in body
+            # the full text is on disk, so its path is offered
+            assert "bjorkeFolate2023.pdf" in body
+            await pilot.press("escape")
+            await pilot.pause()
+            assert len(app.screen_stack) == 1
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_reference_overlay_steps_through_a_grouped_citation(cited, monkeypatch):
+    monkeypatch.delenv("SIDENOTE_REFCHECK", raising=False)
+
+    async def scenario():
+        app = ReviewApp(cited)
+        async with app.run_test(size=(100, 30)) as pilot:
+            app.cur = (2, app.texts[2].index("barker"))
+            await pilot.press("r")
+            await pilot.pause()
+            assert "barkerFetal1990" in _overlay_text(app)
+            await pilot.press("n")
+            await pilot.pause()
+            body = _overlay_text(app)
+            assert "lucasFetalOrigins1999" in body
+            # the row is shared, so the statement comes along
+            assert "Early insults last" in body
+            # no pdf for this one, and it says where it looked
+            assert "no full text on disk" in body
+            await pilot.press("escape")
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_reference_key_off_a_citation_does_nothing(cited, monkeypatch):
+    monkeypatch.delenv("SIDENOTE_REFCHECK", raising=False)
+
+    async def scenario():
+        app = ReviewApp(cited)
+        async with app.run_test(size=(100, 30)) as pilot:
+            app.cur = (0, 0)
+            await pilot.press("r")
+            await pilot.pause()
+            assert len(app.screen_stack) == 1
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_reference_overlay_opens_the_pdf(cited, monkeypatch, tmp_path):
+    monkeypatch.delenv("SIDENOTE_REFCHECK", raising=False)
+    log = tmp_path / "opened.txt"
+    viewer = tmp_path / "fake-viewer"
+    viewer.write_text(f'#!/bin/sh\necho "$1" >> {log}\n', encoding="utf-8")
+    viewer.chmod(0o755)
+    monkeypatch.setenv("SIDENOTE_PDF_VIEWER", str(viewer))
+
+    async def scenario():
+        app = ReviewApp(cited)
+        async with app.run_test(size=(100, 30)) as pilot:
+            app.cur = (1, app.texts[1].index("bjorke"))
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.press("o")
+            await pilot.pause(0.3)
+            await pilot.press("escape")
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+    assert log.exists()
+    assert log.read_text().strip().endswith("bjorkeFolate2023.pdf")
+
+
+def test_reference_key_without_a_check_file(md_sample, monkeypatch):
+    """A document with no reference-check file just says so."""
+    monkeypatch.delenv("SIDENOTE_REFCHECK", raising=False)
+    md_sample.write_text(
+        "Folate matters [@smithFolate2020] here.\n", encoding="utf-8"
+    )
+
+    async def scenario():
+        app = ReviewApp(md_sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            app.cur = (0, app.texts[0].index("smith"))
+            await pilot.press("r")
+            await pilot.pause()
+            assert len(app.screen_stack) == 1
+            await pilot.press("q")
+
+    asyncio.run(scenario())

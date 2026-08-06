@@ -1,6 +1,7 @@
 """Command line interface for sidenote.
 
 sidenote FILE                 open the TUI (.odt, .docx or .md)
+sidenote FILE --refcheck F    read reference rows from a given file
 sidenote list FILE            list comments
 sidenote check FILE           report orphaned comments, nonzero on any
 sidenote changes FILE         list tracked changes
@@ -124,6 +125,12 @@ def main(argv: list[str] | None = None) -> int:
     p_view = sub.add_parser("view", help="open the TUI")
     p_view.add_argument("file", type=Path)
     p_view.add_argument("--author", help="comment author name")
+    p_view.add_argument(
+        "--refcheck",
+        type=Path,
+        help="reference-check.md to read for the r key "
+        "(default: found beside the document)",
+    )
 
     p_list = sub.add_parser("list", help="list comments")
     p_list.add_argument("file", type=Path)
@@ -169,7 +176,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "view":
         from sidenote.tui import ReviewApp
 
-        ReviewApp(args.file, author=args.author).run()
+        ReviewApp(
+            args.file, author=args.author, refcheck=args.refcheck
+        ).run()
         return 0
 
     try:

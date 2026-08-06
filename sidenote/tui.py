@@ -31,8 +31,17 @@ from textual.strip import Strip
 from textual.widgets import Footer, Input, Label, ListItem, ListView, Static, TextArea
 
 from sidenote.engine import Comment, Pos, TrackedChange, open_review
+from sidenote.refcheck import (
+    ReferenceCheck,
+    RefEntry,
+    find_reference_check,
+    load_reference_check,
+    open_pdf,
+)
 
 WORD_RE = re.compile(r"[\wÀ-ɏ]+")
+# a pandoc citation key in the source, @smithFolateIntake2020
+CITATION_RE = re.compile(r"@([A-Za-z0-9_][\w.:#$%&+?<>~/-]*)")
 # vim's sentence rule. . ! or ? then any closing brackets or quotes,
 # followed by whitespace or the end of the paragraph.
 SENTENCE_END_RE = re.compile(r"[.!?][)\]\"'’”]*(?=\s|$)")
@@ -46,6 +55,9 @@ STYLE_SELECTION = "reverse"
 STYLE_CURSOR = "black on bright_yellow"
 STYLE_INSERTION = "green"
 STYLE_DELETION = "underline red"
+
+# reference-check status word -> colour in the reference overlay
+STATUS_STYLES = {"OK": "green", "FIXED": "cyan", "WEAK": "yellow"}
 
 # Side panel width in columns, and the range ctrl+left/right moves it in.
 PANEL_WIDTH = 44
@@ -92,6 +104,13 @@ HELP_TEXT = """\
   * #            filter to selected comment's author, step through
   escape         clear the filter, then back to document
   tab            back to the document
+
+[b]References[/b]
+  r              what reference-check.md says about the citation
+                 under the cursor, with its supporting quote
+  n N            other keys of a grouped citation
+  o              open the full-text pdf for the shown key
+  j k            scroll the overlay, escape closes it
 
 [b]Tracked changes[/b]
   S              open and focus changes panel / close it
@@ -215,6 +234,48 @@ def word_object(text: str, offset: int, around: bool) -> tuple[int, int]:
     return lo, hi
 
 
+def bracket_span(text: str, offset: int) -> tuple[int, int] | None:
+    """The [...] group around offset, as (inner start, inner end).
+
+    Used to treat `[@a; @b]` as one citation, so the cursor anywhere in
+    the group reaches every key in it.
+    """
+    lo = text.rfind("[", 0, offset + 1)
+    if lo == -1 or text.find("]", lo, offset) != -1:
+        return None
+    hi = text.find("]", offset)
+    if hi == -1 or text.find("[", offset + 1, hi) != -1:
+        return None
+    return lo + 1, hi
+
+
+def citations_at(text: str, offset: int) -> list[str]:
+    """Citation keys of the citation at the cursor, that one first.
+
+    Inside a bracketed group every key in the group comes along, so a
+    multi-source citation can be stepped through without moving the
+    cursor. Returns an empty list when the cursor is not on a citation.
+    """
+    hits = [
+        (m.start(), m.end(), m.group(1).rstrip(".,;:"))
+        for m in CITATION_RE.finditer(text)
+    ]
+    if not hits:
+        return []
+    at_cursor = next((h for h in hits if h[0] <= offset < h[1]), None)
+    span = bracket_span(text, offset)
+    group = [h for h in hits if span[0] <= h[0] < span[1]] if span else []
+    if at_cursor is not None and at_cursor not in group:
+        group = [at_cursor]
+    if not group:
+        return []
+    keys = [h[2] for h in group]
+    if at_cursor is not None and at_cursor[2] in keys:
+        cut = keys.index(at_cursor[2])
+        keys = keys[cut:] + keys[:cut]
+    return keys
+
+
 def _split_hard_lines(text: str) -> list[tuple[int, str]]:
     out = []
     start = 0
@@ -313,6 +374,120 @@ class HelpScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+class ReferenceScreen(ModalScreen[None]):
+    """What the reference-check file says about a citation.
+
+    Shows one key at a time, every row of the table that cites it, with
+    `n`/`N` stepping through the other keys of a grouped citation and
+    `o` opening the full text.
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "close"),
+        Binding("q", "close", show=False),
+        Binding("o", "open_pdf", show=False),
+    ]
+
+    def __init__(self, check: ReferenceCheck, keys: list[str]):
+        super().__init__()
+        self.check = check
+        self.keys = keys
+        self.index = 0
+
+    @property
+    def key(self) -> str:
+        return self.keys[self.index]
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="reference-dialog"):
+            yield Static(id="reference-body")
+
+    def on_mount(self) -> None:
+        self.query_one(VerticalScroll).focus()
+        self._refresh_body()
+
+    def _refresh_body(self) -> None:
+        scroll = self.query_one(VerticalScroll)
+        title = "reference"
+        if len(self.keys) > 1:
+            title += f" {self.index + 1}/{len(self.keys)}"
+        scroll.border_title = title
+        scroll.scroll_to(y=0, animate=False)
+        self.query_one("#reference-body", Static).update(self._body())
+
+    def _body(self) -> str:
+        entries = self.check.lookup(self.key)
+        parts = [f"[b]{escape(self.key)}[/b]"]
+        if entries:
+            for entry in entries:
+                parts.append(self._entry_text(entry))
+        else:
+            parts.append(
+                f"[yellow]not listed in {escape(self.check.path.name)}[/yellow]"
+            )
+        parts.append(self._pdf_text())
+        hints = ["o open pdf", "j k scroll", "escape close"]
+        if len(self.keys) > 1:
+            hints.insert(0, "n N other keys")
+        parts.append("[dim]" + " · ".join(hints) + "[/dim]")
+        return "\n\n".join(parts)
+
+    def _entry_text(self, entry: RefEntry) -> str:
+        head = []
+        if entry.section:
+            head.append(f"[dim]{escape(entry.section)}[/dim]")
+        if entry.status:
+            style = STATUS_STYLES.get(entry.status.upper(), "white")
+            head.append(f"[{style}]{escape(entry.status)}[/{style}]")
+        lines = [" · ".join(head)] if head else []
+        if entry.statement:
+            lines.append(escape(entry.statement))
+        if entry.quote:
+            # rendered as written, the cell already carries its own
+            # quotation marks and sometimes a note after them
+            lines.append(f"[dim]{escape(entry.quote)}[/dim]")
+        return "\n".join(lines)
+
+    def _pdf_text(self) -> str:
+        pdf = self.check.pdf_for(self.key)
+        if pdf is not None:
+            return f"[dim]full text[/dim] {escape(str(pdf))}"
+        expected = self.check.expected_pdf(self.key)
+        where = f", looked in {escape(str(expected.parent))}" if expected else ""
+        return f"[dim]no full text on disk{where}[/dim]"
+
+    def on_key(self, event) -> None:
+        scroll = self.query_one(VerticalScroll)
+        ch = event.character
+        if ch in ("j", "k"):
+            step = 1 if ch == "j" else -1
+            scroll.scroll_to(y=int(scroll.scroll_offset.y) + step, animate=False)
+        elif ch in ("n", "N") and len(self.keys) > 1:
+            step = 1 if ch == "n" else -1
+            self.index = (self.index + step) % len(self.keys)
+            self._refresh_body()
+        else:
+            return
+        event.stop()
+
+    def action_open_pdf(self) -> None:
+        pdf = self.check.pdf_for(self.key)
+        if pdf is None:
+            self.app.notify(
+                f"no full text for {self.key}", severity="warning"
+            )
+            return
+        try:
+            open_pdf(pdf)
+        except OSError as exc:
+            self.app.notify(f"cannot open {pdf.name}. {exc}", severity="error")
+            return
+        self.app.notify(f"opening {pdf.name}")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class SideList(ListView):
     """Sidebar list of comments with vim-style selection keys."""
 
@@ -381,7 +556,7 @@ class ReviewApp(App):
     #sidebar.visible, #changes.visible { display: block; }
     #sidebar ListItem, #changes ListItem { height: auto; padding: 0 1; }
     #statusbar { dock: top; height: 1; background: $primary-background; padding: 0 1; }
-    CommentInput, SearchInput, HelpScreen { align: center middle; }
+    CommentInput, SearchInput, HelpScreen, ReferenceScreen { align: center middle; }
     #comment-dialog {
         width: 80%; max-width: 120; height: auto; max-height: 90%;
         border: thick $primary; background: $surface; padding: 1 2;
@@ -396,6 +571,10 @@ class ReviewApp(App):
         width: 60; height: auto; max-height: 90%;
         border: thick $primary; background: $surface; padding: 1 2;
     }
+    #reference-dialog {
+        width: 80%; max-width: 100; height: auto; max-height: 90%;
+        border: thick $primary; background: $surface; padding: 1 2;
+    }
     """
 
     BINDINGS = [
@@ -407,6 +586,7 @@ class ReviewApp(App):
         Binding("slash", "search", "search"),
         Binding("s", "toggle_sidebar", "comments"),
         Binding("S", "toggle_changes", "changes"),
+        Binding("r", "reference", "reference"),
         Binding("X", "export", "docx"),
         Binding("question_mark", "help", "help"),
         Binding("escape", "clear_transient", show=False),
@@ -414,10 +594,16 @@ class ReviewApp(App):
         Binding("ctrl+right", "narrow_panel", show=False),
     ]
 
-    def __init__(self, path: str | Path, author: str | None = None):
+    def __init__(
+        self,
+        path: str | Path,
+        author: str | None = None,
+        refcheck: str | Path | None = None,
+    ):
         super().__init__()
         self.path = Path(path)
         self.author = author
+        self.refcheck_path = Path(refcheck) if refcheck else None
         self.review = open_review(self.path)
         self.texts: list[str] = self.review.para_texts()
         self.comment_list: list[Comment] = self.review.comments()
@@ -1412,6 +1598,37 @@ class ReviewApp(App):
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())
+
+    def action_reference(self) -> None:
+        """Show what the reference-check file says about this citation."""
+        keys = citations_at(self.texts[self.cur[0]], self.cur[1])
+        if not keys:
+            self.notify("no citation under cursor", severity="warning")
+            return
+        check = self._load_refcheck()
+        if check is None:
+            self.notify(
+                "no reference-check.md beside the document, "
+                "pass --refcheck to point at one",
+                severity="warning",
+            )
+            return
+        self.push_screen(ReferenceScreen(check, keys))
+
+    def _load_refcheck(self) -> ReferenceCheck | None:
+        """Read the reference-check file, freshly each time.
+
+        It is small and hand-edited while reviewing, so re-reading picks
+        up a row added in another window without reopening the document.
+        """
+        path = self.refcheck_path or find_reference_check(self.path)
+        if path is None or not path.is_file():
+            return None
+        try:
+            return load_reference_check(path)
+        except OSError as exc:
+            self.notify(f"cannot read {path.name}. {exc}", severity="error")
+            return None
 
     def action_export(self) -> None:
         self.notify("exporting to docx...")
