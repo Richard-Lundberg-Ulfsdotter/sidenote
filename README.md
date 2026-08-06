@@ -169,6 +169,12 @@ The comment dialog quotes the full selected text (across paragraphs,
 capped at 600 characters) above a multi-line editor, enter inserts a
 newline, `ctrl+s` saves, escape cancels.
 
+### Theme
+
+The interface uses gruvbox by default. Any other Textual theme can be
+picked with the `TEXTUAL_THEME` environment variable, for example
+`TEXTUAL_THEME=nord sidenote paper.odt`.
+
 ## Architecture
 
 ```

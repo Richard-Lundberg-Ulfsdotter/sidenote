@@ -12,6 +12,7 @@ O(viewport), not O(document).
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.geometry import Size
+from textual.reactive import Reactive
 from textual.screen import ModalScreen
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
@@ -272,6 +274,9 @@ class ReviewApp(App):
     """sidenote. Vim keys, v selects, c comments, X exports docx."""
 
     TITLE = "sidenote"
+
+    # Gruvbox by default. TEXTUAL_THEME still wins if the user sets it.
+    theme: Reactive[str] = Reactive(os.environ.get("TEXTUAL_THEME") or "gruvbox")
 
     CSS = """
     DocumentView { width: 3fr; }
