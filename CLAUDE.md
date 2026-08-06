@@ -99,7 +99,10 @@ sidecar JSON file. See README.md for usage and keys.
   comment or the comment is filtered out. Rebuilds go through
   `_update_sidebar()` whose index set is deferred with
   `call_after_refresh` because ListView clear/extend are queued DOM
-  operations.
+  operations. `ctrl+left`/`ctrl+right` move the divider via
+  `_move_divider`, which writes `styles.width` on both panels (the
+  shared `panel_width`) and lets `DocumentView.on_resize` rewrap. The
+  CSS literal `44` must stay in sync with `PANEL_WIDTH`.
 - `render_line` strips must be padded to the pane width with the
   widget's `rich_style` (`adjust_cell_length`), otherwise the area
   after the text paints in the terminal default background.

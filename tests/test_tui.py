@@ -6,7 +6,16 @@ import shutil
 import pytest
 from sidenote.cli import make_sample
 from sidenote.engine import OdtReview, open_review
-from sidenote.tui import DelLine, Line, ReviewApp, wrap_offsets
+from sidenote.tui import (
+    DOC_MIN_WIDTH,
+    PANEL_MIN_WIDTH,
+    PANEL_STEP,
+    PANEL_WIDTH,
+    DelLine,
+    Line,
+    ReviewApp,
+    wrap_offsets,
+)
 
 needs_soffice = pytest.mark.skipif(
     shutil.which("soffice") is None, reason="LibreOffice not installed"
@@ -329,6 +338,58 @@ def test_sidebar_follows_the_cursor(sample):
     asyncio.run(scenario())
 
 
+def test_ctrl_arrows_move_the_divider(sample):
+    review = OdtReview(sample)
+    review.add_comment((1, 0), (1, 8), "first", author="R")
+    review.save()
+
+    async def scenario():
+        app = ReviewApp(sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            # closed panel, the divider does not move
+            await pilot.press("ctrl+left")
+            assert app.panel_width == PANEL_WIDTH
+            await pilot.press("t")
+            await pilot.pause()
+            await pilot.pause()
+            doc_width = app.doc_view.size.width
+            # ctrl+left grows the panel, the document gives up the columns
+            await pilot.press("ctrl+left")
+            await pilot.pause()
+            await pilot.pause()
+            assert app.panel_width == PANEL_WIDTH + PANEL_STEP
+            assert app.sidebar.outer_size.width == PANEL_WIDTH + PANEL_STEP
+            assert app.doc_view.size.width == doc_width - PANEL_STEP
+            # the wrap layout follows the new document width
+            assert app.lines[0].end <= app.doc_view.size.width
+            # ctrl+right hands them back
+            await pilot.press("ctrl+right")
+            await pilot.pause()
+            await pilot.pause()
+            assert app.panel_width == PANEL_WIDTH
+            assert app.doc_view.size.width == doc_width
+            # the panel stops before it starves the document
+            for _ in range(30):
+                await pilot.press("ctrl+left")
+            await pilot.pause()
+            assert app.panel_width == 100 - DOC_MIN_WIDTH
+            assert app.doc_view.size.width >= DOC_MIN_WIDTH
+            # and it stops at the minimum going the other way
+            for _ in range(30):
+                await pilot.press("ctrl+right")
+            await pilot.pause()
+            assert app.panel_width == PANEL_MIN_WIDTH
+            # the changes panel keeps the width the user chose
+            await pilot.press("escape")
+            await pilot.press("T")
+            await pilot.pause()
+            await pilot.pause()
+            assert app.changes_panel.outer_size.width == PANEL_MIN_WIDTH
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
 def test_comment_dialog_shows_full_anchor(sample):
     async def scenario():
         app = ReviewApp(sample)
@@ -545,6 +606,7 @@ def test_changes_panel(tracked_sample):
             await pilot.press("T")
             await pilot.pause()
             await pilot.pause()
+            await pilot.pause()
             assert app.focused is app.changes_panel
             assert len(app.changes_panel) == 2
             # jump to the deletion from the panel
@@ -554,6 +616,7 @@ def test_changes_panel(tracked_sample):
             assert app.focused is app.doc_view
             # panels are mutually exclusive
             await pilot.press("T")
+            await pilot.pause()
             await pilot.pause()
             await pilot.press("t")
             await pilot.pause()

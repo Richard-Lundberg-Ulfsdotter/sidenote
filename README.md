@@ -127,6 +127,7 @@ TUI and in `sidenote list`.
 | `>` `<`        | jump to next/previous tracked change          |
 | `D`            | show/hide deleted text lines                  |
 | `tab`          | switch focus between document and sidebar     |
+| `ctrl+←/→`     | move the divider, resizing panel and document |
 | `X`            | export to docx (background, not for markdown) |
 | `?`            | help (scrolls with `j`/`k`, escape closes)    |
 | `escape`       | back to document / leave visual / clear search|
@@ -148,6 +149,12 @@ commented text in the document highlights that comment in the panel and
 scrolls it into view, so the note is readable without leaving the
 document. Off any comment the last selection stands, and a comment
 hidden by an active filter is left alone.
+
+`ctrl+←` and `ctrl+→` move the divider between the document and the open
+panel in steps of four columns, and the text rewraps to the new width.
+The panel stops at 20 columns and never leaves the document less than 30.
+Both panels share the width, so the split stays where you put it when
+switching between comments and changes.
 
 Search matches highlight in green with the current match in orange, and
 the status bar shows the match position (`/folate 2/5`). `*`/`#` use

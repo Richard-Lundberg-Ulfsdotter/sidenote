@@ -42,6 +42,13 @@ STYLE_CURSOR = "black on bright_yellow"
 STYLE_INSERTION = "green"
 STYLE_DELETION = "underline red"
 
+# Side panel width in columns, and the range ctrl+left/right moves it in.
+PANEL_WIDTH = 44
+PANEL_MIN_WIDTH = 20
+PANEL_STEP = 4
+# columns the document pane keeps for itself when the panel grows
+DOC_MIN_WIDTH = 30
+
 HELP_TEXT = """\
 [b]Movement[/b]
   j k h l        line down/up, char left/right
@@ -60,6 +67,7 @@ HELP_TEXT = """\
   d              delete comment under cursor
   ] \\[            jump to next/previous comment
   t              open and focus comments sidebar / close it
+  ctrl+left/right move the divider, resizing panel and text
   With the sidebar open, the cursor moving onto commented
   text highlights that comment in the panel.
 
@@ -280,6 +288,8 @@ class ReviewApp(App):
     # Gruvbox by default. TEXTUAL_THEME still wins if the user sets it.
     theme: Reactive[str] = Reactive(os.environ.get("TEXTUAL_THEME") or "gruvbox")
 
+    # the panel width literal must match PANEL_WIDTH, ctrl+left/right
+    # overrides it per widget from there
     CSS = """
     DocumentView { width: 3fr; }
     #sidebar, #changes { width: 44; border: round $primary; padding: 0 1; display: none; }
@@ -315,6 +325,8 @@ class ReviewApp(App):
         Binding("X", "export", "docx"),
         Binding("question_mark", "help", "help"),
         Binding("escape", "clear_transient", show=False),
+        Binding("ctrl+left", "widen_panel", show=False),
+        Binding("ctrl+right", "narrow_panel", show=False),
     ]
 
     def __init__(self, path: str | Path, author: str | None = None):
@@ -337,6 +349,7 @@ class ReviewApp(App):
         self.search_matches: list[Pos] = []
         self.sidebar_filter = ""
         self._sidebar_indices: list[int] = []
+        self.panel_width = PANEL_WIDTH
 
     # ------------------------------------------------------------------
     # Layout
@@ -1179,6 +1192,32 @@ class ReviewApp(App):
             self._update_changes_panel()
             self._sync_changes_index()
             self.changes_panel.focus()
+
+    def action_widen_panel(self) -> None:
+        self._move_divider(PANEL_STEP)
+
+    def action_narrow_panel(self) -> None:
+        self._move_divider(-PANEL_STEP)
+
+    def _move_divider(self, delta: int) -> None:
+        """Move the split between the document and the side panel.
+
+        Both panels share one width so the divider stays where the user
+        put it when switching between comments and changes. The width
+        change triggers DocumentView.on_resize -> rebuild_lines.
+        """
+        if not (
+            self.sidebar.has_class("visible")
+            or self.changes_panel.has_class("visible")
+        ):
+            return
+        widest = max(PANEL_MIN_WIDTH, (self.size.width or 80) - DOC_MIN_WIDTH)
+        width = max(PANEL_MIN_WIDTH, min(self.panel_width + delta, widest))
+        if width == self.panel_width:
+            return
+        self.panel_width = width
+        self.sidebar.styles.width = width
+        self.changes_panel.styles.width = width
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())
