@@ -60,6 +60,8 @@ HELP_TEXT = """\
   d              delete comment under cursor
   ] \\[            jump to next/previous comment
   t              open and focus comments sidebar / close it
+  With the sidebar open, the cursor moving onto commented
+  text highlights that comment in the panel.
 
 [b]Sidebar (when focused)[/b]
   j k g G        move selection, first/last
@@ -424,6 +426,7 @@ class ReviewApp(App):
         """Per-keystroke refresh. Repaints visible lines only."""
         self._update_statusbar()
         self._scroll_cursor_into_view()
+        self._highlight_comment_at_cursor()
         self.doc_view.refresh()
 
     def render_doc_line(self, row: int) -> RichText:
@@ -596,6 +599,23 @@ class ReviewApp(App):
             if self.comment_list[i].start >= self.cur
         ]
         self.call_after_refresh(self._set_sidebar_index, after[0] if after else 0)
+
+    def _highlight_comment_at_cursor(self) -> None:
+        """Select the sidebar entry for the comment the cursor sits in.
+
+        Runs on every cursor move, so it stays O(comments) and touches
+        the ListView only when the selection actually changes. When the
+        cursor is not inside any comment, or the comment is hidden by
+        the filter, the previous selection stands.
+        """
+        if not self.sidebar.has_class("visible"):
+            return
+        idx = self._comment_index_at_cursor()
+        if idx is None or idx not in self._sidebar_indices:
+            return
+        pos = self._sidebar_indices.index(idx)
+        if pos < len(self.sidebar) and self.sidebar.index != pos:
+            self.sidebar.index = pos
 
     def _sidebar_comment(self) -> Comment | None:
         """Comment behind the current sidebar selection, filter-aware."""
@@ -1000,11 +1020,17 @@ class ReviewApp(App):
         self._repaint()
 
     def _comments_at_cursor(self) -> list[Comment]:
-        return [
-            c
-            for c in self.comment_list
-            if c.start <= self.cur < c.end or c.start == self.cur
-        ]
+        return [c for c in self.comment_list if self._covers_cursor(c)]
+
+    def _comment_index_at_cursor(self) -> int | None:
+        """Index into comment_list of the first comment under the cursor."""
+        for i, c in enumerate(self.comment_list):
+            if self._covers_cursor(c):
+                return i
+        return None
+
+    def _covers_cursor(self, c: Comment) -> bool:
+        return c.start <= self.cur < c.end or c.start == self.cur
 
     def _target_comment(self) -> Comment | None:
         """Comment to act on. Sidebar selection when focused, else cursor."""

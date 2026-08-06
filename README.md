@@ -143,6 +143,12 @@ and step to that author's next/previous comment. Escape clears the
 filter first, then returns to the document. Closing the sidebar also
 clears the filter.
 
+With the sidebar open the selection follows the cursor. Moving onto
+commented text in the document highlights that comment in the panel and
+scrolls it into view, so the note is readable without leaving the
+document. Off any comment the last selection stands, and a comment
+hidden by an active filter is left alone.
+
 Search matches highlight in green with the current match in orange, and
 the status bar shows the match position (`/folate 2/5`). `*`/`#` use
 whole-word matching, as in vim.

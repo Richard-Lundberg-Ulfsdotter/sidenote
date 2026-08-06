@@ -91,7 +91,12 @@ sidecar JSON file. See README.md for usage and keys.
   the tracked-changes panel (`T`) is a second `SideList` instance.
   The two panels are mutually exclusive.
   `m`/`d` resolve their target via `_target_comment()` (sidebar
-  selection when focused, else document cursor). Rebuilds go through
+  selection when focused, else document cursor).
+  `_highlight_comment_at_cursor()` runs from `_repaint()` so the
+  sidebar selection follows the document cursor. It sets
+  `sidebar.index` directly (not deferred) because the list is already
+  mounted at that point, and does nothing when the cursor is off any
+  comment or the comment is filtered out. Rebuilds go through
   `_update_sidebar()` whose index set is deferred with
   `call_after_refresh` because ListView clear/extend are queued DOM
   operations.

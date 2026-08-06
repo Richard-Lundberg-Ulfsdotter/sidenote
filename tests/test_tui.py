@@ -290,6 +290,45 @@ def test_sidebar_keyboard(sample):
     assert [c.text for c in OdtReview(sample).comments()] == ["second"]
 
 
+def test_sidebar_follows_the_cursor(sample):
+    review = OdtReview(sample)
+    review.add_comment((1, 0), (1, 8), "first", author="R")
+    review.add_comment((2, 3), (2, 7), "second", author="R")
+    review.add_comment((3, 0), (3, 5), "third", author="R")
+    review.save()
+
+    async def scenario():
+        app = ReviewApp(sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("t")
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("escape")
+            assert app.focused is app.doc_view
+            # ] walks the comments, the sidebar selection walks with it
+            await pilot.press("]")
+            assert app.cur == (1, 0)
+            assert app.sidebar.index == 0
+            await pilot.press("]")
+            assert app.cur == (2, 3)
+            assert app.sidebar.index == 1
+            await pilot.press("]")
+            assert app.sidebar.index == 2
+            await pilot.press("[")
+            assert app.sidebar.index == 1
+            # inside the span counts, not just its first character
+            await pilot.press("l")
+            assert app.cur == (2, 4)
+            assert app.sidebar.index == 1
+            # off any comment the last selection stands
+            await pilot.press("G")
+            assert app.cur == (4, 0)
+            assert app.sidebar.index == 1
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
 def test_comment_dialog_shows_full_anchor(sample):
     async def scenario():
         app = ReviewApp(sample)
