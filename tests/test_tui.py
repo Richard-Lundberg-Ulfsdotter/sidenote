@@ -273,14 +273,39 @@ def test_text_objects_select_for_commenting(sample):
     asyncio.run(scenario())
 
 
-def test_visual_mode_extends_to_the_object(sample):
+def test_visual_mode_selects_the_whole_object(sample):
     async def scenario():
         app = ReviewApp(sample)
         async with app.run_test(size=(100, 30)) as pilot:
+            # from the middle of the sentence, both ends move to it
+            await pilot.press("}", "w", "w", "w", "v", "a", "s")
+            start, _, end = sentence_spans(app.texts[1])[0]
+            assert app.anchor == (1, start)
+            assert app.cur == (1, end - 1)
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_pending_keys_do_not_fire_their_bindings(sample):
+    """The second key of a sequence must not also run its binding."""
+
+    async def scenario():
+        app = ReviewApp(sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            # `as` would otherwise open the comments sidebar with s
             await pilot.press("}", "v", "a", "s")
-            # the anchor stays where v was pressed, the cursor extends
-            assert app.anchor == (1, 0)
-            assert app.cur == (1, sentence_spans(app.texts[1])[0][2] - 1)
+            await pilot.pause()
+            assert not app.sidebar.has_class("visible")
+            # so would jumping to an s with f
+            await pilot.press("escape", "{", "f", "s")
+            await pilot.pause()
+            assert not app.sidebar.has_class("visible")
+            assert app.texts[1][app.cur[1]] == "s"
+            # and S, the changes panel, as an f target
+            await pilot.press("f", "S")
+            await pilot.pause()
+            assert not app.changes_panel.has_class("visible")
             await pilot.press("q")
 
     asyncio.run(scenario())

@@ -103,20 +103,27 @@ sidecar JSON file. See README.md for usage and keys.
   `_move_divider`, which writes `styles.width` on both panels (the
   shared `panel_width`) and lets `DocumentView.on_resize` rewrap. The
   CSS literal `44` must stay in sync with `PANEL_WIDTH`.
-- Multi-key motions. `pending_find` (`f`/`F`/`t`/`T`) and
-  `pending_object` (`a`/`i`) hold the first key and the next `on_key`
-  consumes the second, like `pending_g`/`pending_z`. Each swallows one
-  key unconditionally (escape aborts) so a stray `i` cannot leak into a
-  binding. `f`/`t` search the paragraph, not the display line, because
-  the wrap moves with the pane width. `last_find` backs `;`/`,`,
-  reversed through `FIND_REVERSE`.
+- Multi-key motions. `pending_find` (`f`/`F`/`t`/`T`),
+  `pending_object` (`a`/`i`), `pending_g` and `pending_z` hold the
+  first key. `ReviewApp.on_key` sets them, but `resolve_pending()`
+  consumes the second key and is called from `DocumentView.on_key`,
+  not from `ReviewApp.on_key`. This matters. `event.stop()` in the
+  app's `on_key` does NOT stop the app's own BINDINGS, so `fs` and
+  `as` both jumped and toggled the sidebar. Only stopping the event on
+  the focused widget keeps it from reaching them. Any future
+  multi-key sequence has to resolve there too. A pending prefix
+  swallows exactly one key whether or not it completes.
+- `f`/`t` search the paragraph, not the display line, because the wrap
+  moves with the pane width. `last_find` backs `;`/`,`, reversed
+  through `FIND_REVERSE`.
 - Text objects (`iw aw is as ip ap`) go through `_text_object`, which
-  sets a visual selection rather than driving an operator. From normal
-  mode it sets both ends. In visual mode the anchor stands and only
-  `cur` extends, matching `v` then `as` in vim. `sentence_spans` is
-  vim's rule, `.!?` plus closing brackets or quotes, then whitespace or
-  end of paragraph. It returns `(start, body_end, end)`, the third
-  field being what separates `as` from `is`.
+  sets a visual selection rather than driving an operator, and always
+  sets both ends even in visual mode. That is deliberately unlike vim,
+  which extends the selection forward only. Selecting from the cursor
+  onwards is already `vf.` or `v)`. `sentence_spans` is vim's rule,
+  `.!?` plus closing brackets or quotes, then whitespace or end of
+  paragraph. It returns `(start, body_end, end)`, the third field
+  being what separates `as` from `is`.
 - The panels are `s` (comments) and `S` (changes). They moved off
   `t`/`T` when those became the till motions, do not move them back.
 - `render_line` strips must be padded to the pane width with the

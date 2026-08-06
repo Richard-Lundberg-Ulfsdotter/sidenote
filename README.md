@@ -145,9 +145,11 @@ line breaks are only wrapping and move when the pane is resized. The
 sentence rule is vim's, a `.`, `!` or `?` with any closing brackets or
 quotes after it, then whitespace or the end of the paragraph. Text
 objects work from normal mode as well as from visual mode, so `as`
-selects the sentence around the cursor and `c` comments on it. In visual
-mode the anchor stays put and only the cursor end moves, so `v` then `as`
-grows the selection to the end of the sentence. `ip` and `ap` both take
+selects the sentence around the cursor and `c` comments on it. They
+always take the whole object, both ends of it, wherever in it the
+cursor sits. That differs from vim, which extends an existing visual
+selection forward only, but selecting from the cursor to the end of
+something is what `vf.` and `v)` already do. `ip` and `ap` both take
 the whole paragraph, there being no blank lines to include.
 
 Everything is keyboard-driven, no mouse needed. When the sidebar is

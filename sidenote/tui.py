@@ -337,6 +337,19 @@ class DocumentView(ScrollView):
 
     can_focus = True
 
+    def on_key(self, event) -> None:
+        """Resolve pending multi-key sequences before the bindings run.
+
+        The second key of `fs` or `as` must not also fire the `s`
+        binding. Stopping the event in `ReviewApp.on_key` is too late,
+        the app's own BINDINGS still fire, so the sequences resolve
+        here on the focused widget where stopping the event keeps it
+        from reaching them. Everything else bubbles up untouched.
+        """
+        if self.app.resolve_pending(event):
+            event.stop()
+            event.prevent_default()
+
     def on_resize(self) -> None:
         self.app.rebuild_lines()
 
@@ -905,9 +918,9 @@ class ReviewApp(App):
     def _text_object(self, kind: str, around: bool) -> None:
         """vim iw/aw, is/as, ip/ap. Selects the object into visual mode.
 
-        In visual mode the existing anchor stands and only the cursor
-        end extends, so `v` then `as` grows the selection to the end of
-        the sentence, as in vim.
+        Always takes the whole object, both ends of it, in visual mode
+        too. Extending only forwards from the cursor is what `vf.`
+        already does.
         """
         p, o = self.cur
         text = self.texts[p]
@@ -918,8 +931,7 @@ class ReviewApp(App):
             lo, hi = start, end if around else body_end
         else:
             lo, hi = word_object(text, o, around)
-        if self.anchor is None:
-            self.anchor = (p, lo)
+        self.anchor = (p, lo)
         self.cur = (p, min(max(hi - 1, 0), self._max_off(p)))
         self.goal_col = self._col_in_line()
 
@@ -1016,6 +1028,47 @@ class ReviewApp(App):
             y=int(self.doc_view.scroll_offset.y) + delta, animate=False
         )
 
+    def resolve_pending(self, event) -> bool:
+        """Consume the second key of a multi-key sequence.
+
+        Called from `DocumentView.on_key` so the key never reaches the
+        app BINDINGS. Returns True when a sequence was pending, which
+        swallows the key whether or not it completed the sequence, the
+        way vim treats any prefix.
+        """
+        if len(self.screen_stack) > 1:
+            return False
+        ch = event.character
+        if self.pending_g:
+            self.pending_g = False
+            if ch == "g":
+                self.cur = (0, 0)
+                self.goal_col = 0
+                self._repaint()
+            return True
+        if self.pending_z:
+            self.pending_z = False
+            height = self.doc_view.size.height or 24
+            y = self._cursor_line()
+            targets = {"z": y - height // 2, "t": y, "b": y - height + 1}
+            if ch in targets:
+                self.doc_view.scroll_to(y=max(targets[ch], 0), animate=False)
+            return True
+        if self.pending_find:
+            cmd, self.pending_find = self.pending_find, ""
+            if ch and event.key != "escape":
+                self.last_find = (cmd, ch)
+                self._find_char(cmd, ch)
+                self._repaint()
+            return True
+        if self.pending_object:
+            scope, self.pending_object = self.pending_object, ""
+            if ch in ("w", "s", "p"):
+                self._text_object(ch, around=scope == "a")
+                self._repaint()
+            return True
+        return False
+
     def on_key(self, event) -> None:
         if len(self.screen_stack) > 1:
             return
@@ -1029,38 +1082,6 @@ class ReviewApp(App):
             return
         key = event.key
         ch = event.character
-        if self.pending_g:
-            self.pending_g = False
-            if ch == "g":
-                self.cur = (0, 0)
-                self.goal_col = 0
-                self._repaint()
-                event.stop()
-            return
-        if self.pending_find:
-            cmd, self.pending_find = self.pending_find, ""
-            if ch and key != "escape":
-                self.last_find = (cmd, ch)
-                self._find_char(cmd, ch)
-                self._repaint()
-            event.stop()
-            return
-        if self.pending_object:
-            scope, self.pending_object = self.pending_object, ""
-            if ch in ("w", "s", "p"):
-                self._text_object(ch, around=scope == "a")
-                self._repaint()
-            event.stop()
-            return
-        if self.pending_z:
-            self.pending_z = False
-            height = self.doc_view.size.height or 24
-            y = self._cursor_line()
-            targets = {"z": y - height // 2, "t": y, "b": y - height + 1}
-            if ch in targets:
-                self.doc_view.scroll_to(y=max(targets[ch], 0), animate=False)
-                event.stop()
-            return
         if key == "ctrl+e":
             self._scroll_view(1)
             event.stop()
