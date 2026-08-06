@@ -258,6 +258,7 @@ elements) at the requested offset.
 
 ```sh
 .venv/bin/python -m pytest tests/ -q
+.venv/bin/python tools/make_screenshot.py   # redraw docs/screenshot.svg
 ```
 
 The suite covers the engine round-trips (including a headless LibreOffice

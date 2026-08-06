@@ -129,3 +129,15 @@ sidecar JSON file. See README.md for usage and keys.
   `app.run_test()` + `pilot.press(...)`. Screenshots via
   `app.save_screenshot()` render text-run spacing slightly off after
   rsvg-convert, check the SVG text runs before chasing "missing" spaces.
+- `docs/screenshot.svg` is a `save_screenshot()` export with the fake
+  macOS window chrome stripped. Regenerate it with
+  `.venv/bin/python tools/make_screenshot.py`, which rebuilds the
+  sample document, adds the two pictured comments with a fixed date so
+  the diff stays small, drives the TUI to the captured state, and does
+  the stripping. The picture shows the footer, so any key change dates
+  it. `strip_chrome` deletes the rounded background rect, the title
+  `text`, the three traffic-light `circle`s and the `-title` style
+  rule, sets the terminal group to `translate(0, 0)`, and measures the
+  content box off the SVG itself (width from the per-line clip rects,
+  height from the painted cell rects, which unlike the clip rects
+  include the footer row). 1342x734 for 30 rows.
