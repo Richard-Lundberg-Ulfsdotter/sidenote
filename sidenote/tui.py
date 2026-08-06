@@ -88,7 +88,7 @@ HELP_TEXT = """\
   ip ap          select the whole paragraph
   c              comment on selection, or point note at cursor
   m              edit comment under cursor
-  d              delete comment under cursor
+  d              delete comment under cursor (confirm with y)
   ] \\[            jump to next/previous comment
   s              open and focus comments sidebar / close it
   ctrl+left/right move the divider, resizing panel and text
@@ -320,6 +320,45 @@ class CommentInput(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class ConfirmDelete(ModalScreen[bool]):
+    """Ask before a delete that cannot be taken back.
+
+    Only `y` confirms. Deleting writes the file immediately, and the
+    key that gets you here is one keystroke in a pane that may not
+    have had your attention, so no other key is allowed to agree.
+    """
+
+    BINDINGS = [
+        Binding("y", "confirm", "delete"),
+        Binding("n", "cancel", "keep"),
+        Binding("escape", "cancel", show=False),
+    ]
+
+    def __init__(self, anchor_preview: str, comment: Comment):
+        super().__init__()
+        self.anchor_preview = anchor_preview
+        self.comment = comment
+
+    def compose(self) -> ComposeResult:
+        byline = self.comment.author or "unknown"
+        if self.comment.date:
+            byline += f", {self.comment.date[:10]}"
+        with Vertical(id="confirm-dialog"):
+            yield Static(
+                f"[b]Delete the comment on[/b]\n"
+                f"{escape(self.anchor_preview)}\n"
+                f"[dim]{escape(byline)}[/dim]\n\n"
+                f"{escape(self.comment.text)}\n"
+            )
+            yield Label("[dim]y delete · n or escape keep[/dim]")
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
 
 
 class SearchInput(ModalScreen[str | None]):
@@ -556,7 +595,8 @@ class ReviewApp(App):
     #sidebar.visible, #changes.visible { display: block; }
     #sidebar ListItem, #changes ListItem { height: auto; padding: 0 1; }
     #statusbar { dock: top; height: 1; background: $primary-background; padding: 0 1; }
-    CommentInput, SearchInput, HelpScreen, ReferenceScreen { align: center middle; }
+    CommentInput, SearchInput, HelpScreen, ReferenceScreen,
+    ConfirmDelete { align: center middle; }
     #comment-dialog {
         width: 80%; max-width: 120; height: auto; max-height: 90%;
         border: thick $primary; background: $surface; padding: 1 2;
@@ -566,6 +606,10 @@ class ReviewApp(App):
     #search-dialog {
         width: 50; height: auto;
         border: thick $primary; background: $surface; padding: 1 2;
+    }
+    #confirm-dialog {
+        width: 60%; max-width: 80; height: auto; max-height: 60%;
+        border: thick $error; background: $surface; padding: 1 2;
     }
     #help-dialog {
         width: 60; height: auto; max-height: 90%;
@@ -1495,9 +1539,17 @@ class ReviewApp(App):
         if target is None:
             self.notify("no comment under cursor", severity="warning")
             return
-        self.review.delete_comment(target)
-        self.review.save()
-        self._after_mutation("comment deleted")
+        def on_result(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            self.review.delete_comment(target)
+            self.review.save()
+            self._after_mutation("comment deleted")
+
+        self.push_screen(
+            ConfirmDelete(self._anchor_preview(target.start, target.end), target),
+            on_result,
+        )
 
     def action_search(self) -> None:
         if self.focused is self.sidebar:

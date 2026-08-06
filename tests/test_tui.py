@@ -114,11 +114,36 @@ def test_navigation_and_delete(sample):
             assert app.cur == (1, 9)
             await pilot.press("d")
             await pilot.pause()
+            # the delete waits on the confirm, nothing is gone yet
+            assert len(app.comment_list) == 1
+            await pilot.press("y")
+            await pilot.pause()
             assert app.comment_list == []
             await pilot.press("q")
 
     asyncio.run(scenario())
     assert OdtReview(sample).comments() == []
+
+
+@pytest.mark.parametrize("key", ["n", "escape"])
+def test_delete_can_be_called_off(sample, key):
+    """A stray d must not cost a comment. Only y agrees."""
+    review = OdtReview(sample)
+    review.add_comment((1, 9), (1, 22), "note", author="R")
+    review.save()
+
+    async def scenario():
+        app = ReviewApp(sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("right_square_bracket", "d")
+            await pilot.pause()
+            await pilot.press(key)
+            await pilot.pause()
+            assert [c.text for c in app.comment_list] == ["note"]
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+    assert [c.text for c in OdtReview(sample).comments()] == ["note"]
 
 
 def test_vim_motions(sample):
@@ -457,6 +482,8 @@ def test_sidebar_keyboard(sample):
             assert app.focused is app.sidebar
             await pilot.press("g", "d")
             await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
             await pilot.pause()
             assert [c.text for c in app.comment_list] == ["second"]
             # escape returns focus to the document, s closes the sidebar
@@ -610,6 +637,8 @@ def test_sidebar_author_filter(sample):
             assert app.cur == (2, 0)
             # back in the sidebar, d deletes the selected Anna comment
             await pilot.press("tab", "d")
+            await pilot.pause()
+            await pilot.press("y")
             await pilot.pause()
             await pilot.pause()
             assert [c.author for c in app.comment_list] == ["Richard", "Anna"]
