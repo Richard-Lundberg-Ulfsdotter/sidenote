@@ -146,6 +146,113 @@ def test_delete_can_be_called_off(sample, key):
     assert [c.text for c in OdtReview(sample).comments()] == ["note"]
 
 
+def test_undo_puts_a_deleted_comment_back(sample):
+    review = OdtReview(sample)
+    review.add_comment((1, 9), (1, 22), "note", author="Anna")
+    review.save()
+    was = OdtReview(sample).comments()[0]
+
+    async def scenario():
+        app = ReviewApp(sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("right_square_bracket", "d")
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+            assert app.comment_list == []
+            await pilot.press("u")
+            await pilot.pause()
+            (back,) = app.comment_list
+            # author and date come back too, a restored comment is not
+            # a new one written by whoever pressed u
+            assert (back.text, back.author, back.date) == (
+                was.text,
+                was.author,
+                was.date,
+            )
+            assert (back.start, back.end) == (was.start, was.end)
+            # ctrl+r deletes it again
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert app.comment_list == []
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+    assert OdtReview(sample).comments() == []
+
+
+def test_undo_walks_back_several_changes(sample):
+    async def scenario():
+        app = ReviewApp(sample, author="R")
+        async with app.run_test(size=(100, 30)) as pilot:
+            for word in ("first", "second"):
+                await pilot.press("c")
+                await pilot.pause()
+                for ch in word:
+                    await pilot.press(ch)
+                await pilot.press("ctrl+s")
+                await pilot.pause()
+                await pilot.press("right_curly_bracket")
+            assert [c.text for c in app.comment_list] == ["first", "second"]
+            await pilot.press("u")
+            await pilot.pause()
+            assert [c.text for c in app.comment_list] == ["first"]
+            await pilot.press("u")
+            await pilot.pause()
+            assert app.comment_list == []
+            # the stack is empty, a further u is a no-op not a crash
+            await pilot.press("u")
+            await pilot.pause()
+            assert app.comment_list == []
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_undo_restores_the_previous_comment_text(sample):
+    review = OdtReview(sample)
+    review.add_comment((1, 9), (1, 22), "before", author="Anna")
+    review.save()
+
+    async def scenario():
+        app = ReviewApp(sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("right_square_bracket", "m")
+            await pilot.pause()
+            for ch in " after":
+                await pilot.press(ch)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert [c.text for c in app.comment_list] == ["before after"]
+            await pilot.press("u")
+            await pilot.pause()
+            assert [c.text for c in app.comment_list] == ["before"]
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+    assert [c.text for c in OdtReview(sample).comments()] == ["before"]
+
+
+def test_undo_works_on_markdown_too(md_sample):
+    async def scenario():
+        app = ReviewApp(md_sample, author="R")
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("c")
+            await pilot.pause()
+            for ch in "note":
+                await pilot.press(ch)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert len(app.comment_list) == 1
+            await pilot.press("u")
+            await pilot.pause()
+            assert app.comment_list == []
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+    assert open_review(md_sample).comments() == []
+
+
 def test_vim_motions(sample):
     async def scenario():
         app = ReviewApp(sample)

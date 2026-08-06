@@ -133,6 +133,7 @@ TUI and in `sidenote list`.
 | `c`            | comment on selection, or point note at cursor |
 | `m`            | edit comment (cursor or sidebar selection)    |
 | `d`            | delete comment, confirm with `y`              |
+| `u` `ctrl+r`   | undo / redo a comment change                  |
 | `]` `[`        | jump to next/previous comment                 |
 | `r`            | reference for the citation under the cursor   |
 | `/`            | search (smartcase)                            |

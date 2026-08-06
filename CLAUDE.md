@@ -148,6 +148,20 @@ sidecar JSON file. See README.md for usage and keys.
   directory the check file documents. Do not name a `ModalScreen`
   method `_render`, that is Textual's own and overriding it breaks
   painting with a bare `AttributeError` in the compositor.
+- Undo. `u` and `ctrl+r` walk `ReviewApp.undo_stack`/`redo_stack` of
+  `Edit(label, before, after)`, each side a `Snapshot` of one comment
+  or None. Add is `(None, after)`, delete is `(before, None)`, edit is
+  both, so `_restore(target, current)` serves both directions and only
+  `_step` knows which way it is going. Snapshots cannot hold a
+  `Comment` because every mutation reloads the document, so
+  `_comment_matching` re-finds it by span plus text. A snapshot that
+  no longer matches refuses the undo rather than guessing.
+  `add_comment` takes an optional `date` on both engines purely so a
+  restored comment keeps its original timestamp instead of being
+  restamped as new. `update_comment` deliberately does not, undoing an
+  edit is itself an edit. The stack is in-memory and per-session,
+  which is why `d` also confirms, a stray keystroke you never noticed
+  is not one you will undo.
 - The panels are `s` (comments) and `S` (changes). They moved off
   `t`/`T` when those became the till motions, do not move them back.
 - `render_line` strips must be padded to the pane width with the
@@ -171,6 +185,8 @@ sidecar JSON file. See README.md for usage and keys.
   rule, sets the terminal group to `translate(0, 0)`, and measures the
   content box off the SVG itself (width from the per-line clip rects,
   height from the painted cell rects, which unlike the clip rects
-  include the footer row). 1464x734 for 30 rows at 120 columns. The
-  capture is 120 wide because the footer stopped fitting at 110 when
-  `r` was added, and a truncated footer in the picture looks broken.
+  include the footer row). 1586x734 for 30 rows at 130 columns. The
+  width tracks the footer, which stopped fitting at 110 when `r` was
+  added and at 120 when `u` was, and a truncated footer in the picture
+  looks broken. Check the footer after any binding change and rerun
+  the tool, 130 is the current minimum that still shows `? help`.

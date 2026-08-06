@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from rich.markup import escape
@@ -89,6 +89,7 @@ HELP_TEXT = """\
   c              comment on selection, or point note at cursor
   m              edit comment under cursor
   d              delete comment under cursor (confirm with y)
+  u  ctrl+r      undo / redo a comment change
   ] \\[            jump to next/previous comment
   s              open and focus comments sidebar / close it
   ctrl+left/right move the divider, resizing panel and text
@@ -154,6 +155,41 @@ class DelLine:
     """
 
     text: str
+
+
+@dataclass
+class Snapshot:
+    """A comment as it stood, enough to rebuild it through the engine."""
+
+    start: Pos
+    end: Pos
+    text: str
+    author: str
+    date: str
+
+    @classmethod
+    def of(cls, comment: Comment) -> "Snapshot":
+        return cls(
+            start=comment.start,
+            end=comment.end,
+            text=comment.text,
+            author=comment.author,
+            date=comment.date,
+        )
+
+
+@dataclass
+class Edit:
+    """One reversible change, as the comment before and after it.
+
+    before is None for an add, after is None for a delete, and both
+    are set for a text edit. Undo restores before, redo restores
+    after, so a single apply step serves both directions.
+    """
+
+    label: str
+    before: Snapshot | None
+    after: Snapshot | None
 
 
 def wrap_offsets(text: str, width: int) -> list[tuple[int, int]]:
@@ -627,6 +663,8 @@ class ReviewApp(App):
         Binding("c", "comment", "comment"),
         Binding("m", "edit_comment", "edit"),
         Binding("d", "delete_comment", "delete"),
+        Binding("u", "undo", "undo"),
+        Binding("ctrl+r", "redo", show=False),
         Binding("slash", "search", "search"),
         Binding("s", "toggle_sidebar", "comments"),
         Binding("S", "toggle_changes", "changes"),
@@ -668,6 +706,8 @@ class ReviewApp(App):
         self.sidebar_filter = ""
         self._sidebar_indices: list[int] = []
         self.panel_width = PANEL_WIDTH
+        self.undo_stack: list[Edit] = []
+        self.redo_stack: list[Edit] = []
 
     # ------------------------------------------------------------------
     # Layout
@@ -1498,6 +1538,80 @@ class ReviewApp(App):
         self._update_sidebar(keep_index=keep)
         self.notify(message)
 
+    # ------------------------------------------------------------------
+    # Undo
+    # ------------------------------------------------------------------
+
+    def _record(self, label: str, before: Snapshot | None, after: Snapshot | None) -> None:
+        """Push a change onto the undo stack, dropping any redo branch."""
+        self.undo_stack.append(Edit(label, before, after))
+        self.redo_stack.clear()
+
+    def _comment_matching(self, snap: Snapshot) -> Comment | None:
+        """Find the live comment a snapshot describes.
+
+        Every mutation reloads the document, so a snapshot cannot hold
+        a Comment. Span plus text identifies one well enough, and two
+        identical comments on one span are interchangeable anyway.
+        """
+        for comment in self.review.comments():
+            if (
+                comment.start == snap.start
+                and comment.end == snap.end
+                and comment.text == snap.text
+            ):
+                return comment
+        return None
+
+    def _restore(self, target: Snapshot | None, current: Snapshot | None) -> bool:
+        """Put the document back to `target` where it now holds `current`."""
+        if current is None:
+            if target is None:
+                return False
+            self.review.add_comment(
+                target.start,
+                target.end,
+                target.text,
+                author=target.author,
+                date=target.date,
+            )
+            return True
+        found = self._comment_matching(current)
+        if found is None:
+            return False
+        if target is None:
+            self.review.delete_comment(found)
+        else:
+            self.review.update_comment(found, target.text)
+        return True
+
+    def _step(self, undoing: bool) -> None:
+        stack = self.undo_stack if undoing else self.redo_stack
+        word = "undo" if undoing else "redo"
+        if not stack:
+            self.notify(f"nothing to {word}", severity="warning")
+            return
+        edit = stack[-1]
+        target, current = (
+            (edit.before, edit.after) if undoing else (edit.after, edit.before)
+        )
+        if not self._restore(target, current):
+            self.notify(
+                f"cannot {word}, that comment has changed since",
+                severity="error",
+            )
+            return
+        stack.pop()
+        (self.redo_stack if undoing else self.undo_stack).append(edit)
+        self.review.save()
+        self._after_mutation(f"{word} {edit.label}")
+
+    def action_undo(self) -> None:
+        self._step(undoing=True)
+
+    def action_redo(self) -> None:
+        self._step(undoing=False)
+
     def action_comment(self) -> None:
         sel = self._selection()
         start, end = sel if sel else (self.cur, self.cur)
@@ -1506,7 +1620,8 @@ class ReviewApp(App):
         def on_result(text: str | None) -> None:
             if not text:
                 return
-            self.review.add_comment(start, end, text, author=self.author)
+            added = self.review.add_comment(start, end, text, author=self.author)
+            self._record("comment", None, Snapshot.of(added))
             self.review.save()
             self.anchor = None
             self._after_mutation("comment saved")
@@ -1523,7 +1638,11 @@ class ReviewApp(App):
         def on_result(text: str | None) -> None:
             if not text or text == target.text:
                 return
+            before = Snapshot.of(target)
             self.review.update_comment(target, text)
+            self._record(
+                "edit", before, replace(before, text=text, date=target.date)
+            )
             self.review.save()
             self._after_mutation("comment updated")
 
@@ -1542,6 +1661,7 @@ class ReviewApp(App):
         def on_result(confirmed: bool | None) -> None:
             if not confirmed:
                 return
+            self._record("delete", Snapshot.of(target), None)
             self.review.delete_comment(target)
             self.review.save()
             self._after_mutation("comment deleted")

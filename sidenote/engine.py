@@ -462,11 +462,14 @@ class OdtReview:
         end: Pos,
         text: str,
         author: str | None = None,
+        date: str | None = None,
     ) -> Comment:
         """Anchor a comment from start to end (end exclusive).
 
         start == end creates a point comment. Ranged comments get an
         office:name so LibreOffice exports them as Word comment ranges.
+        date defaults to now and is passed explicitly only when putting
+        a deleted comment back, which must not restamp it.
         """
         if end < start:
             start, end = end, start
@@ -481,7 +484,7 @@ class OdtReview:
                     f"of length {len(texts[para_idx])}"
                 )
         author = author or os.environ.get("SIDENOTE_AUTHOR") or getpass.getuser()
-        date = datetime.now().isoformat(timespec="seconds")
+        date = date or datetime.now().isoformat(timespec="seconds")
         ranged = end > start
         name = self._unique_name() if ranged else None
 

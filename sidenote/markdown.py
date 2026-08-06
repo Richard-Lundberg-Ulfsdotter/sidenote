@@ -348,8 +348,13 @@ class MarkdownReview:
         end: Pos,
         text: str,
         author: str | None = None,
+        date: str | None = None,
     ) -> Comment:
-        """Anchor a comment from start to end (end exclusive)."""
+        """Anchor a comment from start to end (end exclusive).
+
+        date defaults to now and is passed explicitly only when putting
+        a deleted comment back, which must not restamp it.
+        """
         if end < start:
             start, end = end, start
         for para, off in (start, end):
@@ -361,7 +366,7 @@ class MarkdownReview:
                     f"of length {len(self._texts[para])}"
                 )
         author = author or os.environ.get("SIDENOTE_AUTHOR") or getpass.getuser()
-        date = datetime.now().isoformat(timespec="seconds")
+        date = date or datetime.now().isoformat(timespec="seconds")
         ranged = end > start
         record = _Record(
             name=self._unique_name(),
