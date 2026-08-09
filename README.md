@@ -71,12 +71,12 @@ original file, so export means "write my comments back into the docx".
 
 ### Markdown workflow
 
-Opening a `.md` (also `.markdown`, `.mkd`, `.qmd`, `.rmd`) reviews the file
-in place. Paragraphs are the blank-line separated blocks of the source,
-shown as they are written, with fenced code blocks kept whole. Comments go
-to `<name>.sidenote.json` next to the document. The markdown itself is never
-written to, which is the point when it feeds a build or lives under version
-control where comment churn would clutter prose diffs.
+Opening a `.md` (also `.markdown`, `.mdown`, `.mkd`, `.qmd`, `.rmd`) reviews
+the file in place. Paragraphs are the blank-line separated blocks of the
+source, shown as they are written, with fenced code blocks kept whole.
+Comments go to `<name>.sidenote.json` next to the document. The markdown is
+never written to, which is the point when it feeds a build or lives under
+version control where comment churn would clutter prose diffs.
 
 Comments are stored top to bottom and named for where they sit, so `cmt3`
 in the sidecar is the third comment down and the one numbered 3 in the

@@ -38,7 +38,6 @@ MIN_SOLO_CONTEXT = 8
 
 
 def sidecar_path(path: str | Path) -> Path:
-    """Path of the comment file belonging to a Markdown document."""
     path = Path(path)
     return path.with_name(path.stem + ".sidenote.json")
 
@@ -263,7 +262,6 @@ class MarkdownReview:
 
     @property
     def edited_elsewhere(self) -> bool:
-        """True when the document changed since the sidecar was written."""
         return bool(
             self._records and self.stored_digest and self.stored_digest != self.digest
         )
@@ -279,16 +277,8 @@ class MarkdownReview:
             has_sidecar=self.sidecar.exists(),
         )
 
-    # ------------------------------------------------------------------
-    # Document structure
-    # ------------------------------------------------------------------
-
     def para_texts(self) -> list[str]:
         return list(self._texts)
-
-    # ------------------------------------------------------------------
-    # Comments
-    # ------------------------------------------------------------------
 
     def _load_records(self) -> list[_Record]:
         if not self.sidecar.exists():
@@ -350,11 +340,7 @@ class MarkdownReview:
         author: str | None = None,
         date: str | None = None,
     ) -> Comment:
-        """Anchor a comment from start to end (end exclusive).
-
-        date defaults to now and is passed explicitly only when putting
-        a deleted comment back, which must not restamp it.
-        """
+        """Anchor a comment from start to end, as `OdtReview.add_comment`."""
         if end < start:
             start, end = end, start
         for para, off in (start, end):
@@ -389,7 +375,6 @@ class MarkdownReview:
         )
 
     def update_comment(self, comment: Comment, text: str) -> None:
-        """Replace a comment's text, refreshing its date."""
         record = self._record_for(comment)
         record.text = text
         record.date = datetime.now().isoformat(timespec="seconds")
@@ -414,17 +399,8 @@ class MarkdownReview:
             n += 1
         return f"cmt{n}"
 
-    # ------------------------------------------------------------------
-    # Tracked changes
-    # ------------------------------------------------------------------
-
     def changes(self) -> list[TrackedChange]:
-        """Markdown carries no tracked changes."""
         return []
-
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
 
     def save(self, path: str | Path | None = None) -> Path:
         """Write the sidecar. The Markdown file is never touched.

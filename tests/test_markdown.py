@@ -36,11 +36,6 @@ def offset_of(review, para, needle):
     return review.para_texts()[para].index(needle)
 
 
-# ----------------------------------------------------------------------
-# Block splitting
-# ----------------------------------------------------------------------
-
-
 def test_blocks_split_on_blank_lines():
     assert split_blocks("one\n\ntwo\n\n\nthree") == ["one", "two", "three"]
 
@@ -54,11 +49,6 @@ def test_hard_wrapped_paragraph_stays_one_block(doc):
     review = MarkdownReview(doc)
     assert "\n" in review.para_texts()[1]
     assert review.para_texts()[0] == "# Title"
-
-
-# ----------------------------------------------------------------------
-# Round trip
-# ----------------------------------------------------------------------
 
 
 def test_open_review_picks_the_markdown_engine(doc):
@@ -107,11 +97,6 @@ def test_point_comment_has_no_quote(doc):
     review.save()
     (comment,) = MarkdownReview(doc).comments()
     assert comment.start == comment.end == (3, 0)
-
-
-# ----------------------------------------------------------------------
-# Re-anchoring
-# ----------------------------------------------------------------------
 
 
 def test_anchor_survives_paragraphs_inserted_above(doc):
@@ -222,11 +207,6 @@ def test_save_recaptures_moved_anchors(doc):
     assert payload["comments"][0]["start"]["para"] == 3
 
 
-# ----------------------------------------------------------------------
-# Naming
-# ----------------------------------------------------------------------
-
-
 def test_names_run_top_to_bottom_whatever_the_order_written(doc):
     """cmtN is the Nth comment down, which is what the sidebar shows."""
     review = MarkdownReview(doc)
@@ -261,11 +241,6 @@ def test_deleting_a_comment_closes_the_gap_in_the_names(doc):
         ("cmt1", "first"),
         ("cmt2", "last"),
     ]
-
-
-# ----------------------------------------------------------------------
-# Status and edits made elsewhere
-# ----------------------------------------------------------------------
 
 
 def test_status_reports_edits_made_elsewhere(doc):
@@ -304,11 +279,6 @@ def test_no_sidecar_means_no_comments(doc):
     review = MarkdownReview(doc)
     assert review.comments() == []
     assert not review.status().has_sidecar
-
-
-# ----------------------------------------------------------------------
-# Editing and deleting
-# ----------------------------------------------------------------------
 
 
 def test_update_and_delete(doc):

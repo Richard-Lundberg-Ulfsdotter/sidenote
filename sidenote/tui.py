@@ -1,7 +1,8 @@
-"""Textual TUI for reviewing ODT documents.
+"""Textual TUI for reviewing documents.
 
 Vim-style navigation over a read-only rendering of the document, with a
 character-level visual mode for selecting the span a comment anchors to.
+Whatever `engine.open_review` returns works here, ODT and Markdown alike.
 
 Performance model. The wrap layout (display line -> paragraph slice) is
 computed once per resize or document change and cached in
@@ -127,11 +128,12 @@ HELP_TEXT = """\
   * #            search word under cursor forward/backward
 
 [b]Other[/b]
-  X              export to docx
+  X              export to docx (not for markdown)
   escape         leave visual mode / clear search
   q              quit
 
-Comments save to the ODT immediately. In the comment box,
+Comments save immediately, to the ODT itself or to the
+markdown sidecar beside the document. In the comment box,
 enter inserts a newline, ctrl+s saves, escape cancels.
 This help scrolls with j/k, escape or q closes it.\
 """
@@ -139,7 +141,7 @@ This help scrolls with j/k, escape or q closes it.\
 
 @dataclass
 class Line:
-    """One display line. Maps back to a slice of a source paragraph."""
+    """One display line, mapping back to a slice of a source paragraph."""
 
     para: int
     start: int
@@ -359,12 +361,7 @@ class CommentInput(ModalScreen[str | None]):
 
 
 class ConfirmDelete(ModalScreen[bool]):
-    """Ask before a delete that cannot be taken back.
-
-    Only `y` confirms. Deleting writes the file immediately, and the
-    key that gets you here is one keystroke in a pane that may not
-    have had your attention, so no other key is allowed to agree.
-    """
+    """Confirm a delete. Only `y` agrees, deleting writes the file at once."""
 
     BINDINGS = [
         Binding("y", "confirm", "delete"),
@@ -564,7 +561,10 @@ class ReferenceScreen(ModalScreen[None]):
 
 
 class SideList(ListView):
-    """Sidebar list of comments with vim-style selection keys."""
+    """A side panel list with vim-style selection keys.
+
+    Used for both the comments sidebar and the changes panel.
+    """
 
     BINDINGS = [
         Binding("j", "cursor_down", show=False),
@@ -590,11 +590,9 @@ class DocumentView(ScrollView):
     def on_key(self, event) -> None:
         """Resolve pending multi-key sequences before the bindings run.
 
-        The second key of `fs` or `as` must not also fire the `s`
-        binding. Stopping the event in `ReviewApp.on_key` is too late,
-        the app's own BINDINGS still fire, so the sequences resolve
-        here on the focused widget where stopping the event keeps it
-        from reaching them. Everything else bubbles up untouched.
+        Here rather than in `ReviewApp.on_key`. Stopping the event
+        there still lets the app's own BINDINGS fire, so `fs` and `as`
+        also toggled the sidebar. Everything else bubbles up untouched.
         """
         if self.app.resolve_pending(event):
             event.stop()
@@ -794,7 +792,7 @@ class ReviewApp(App):
         self._repaint()
 
     def _repaint(self) -> None:
-        """Per-keystroke refresh. Repaints visible lines only."""
+        """Per-keystroke refresh of the visible lines."""
         self._update_statusbar()
         self._scroll_cursor_into_view()
         self._highlight_comment_at_cursor()
@@ -974,10 +972,8 @@ class ReviewApp(App):
     def _highlight_comment_at_cursor(self) -> None:
         """Select the sidebar entry for the comment the cursor sits in.
 
-        Runs on every cursor move, so it stays O(comments) and touches
-        the ListView only when the selection actually changes. When the
-        cursor is not inside any comment, or the comment is hidden by
-        the filter, the previous selection stands.
+        Off any comment, or on one the filter hides, the previous
+        selection stands.
         """
         if not self.sidebar.has_class("visible"):
             return
@@ -989,7 +985,6 @@ class ReviewApp(App):
             self.sidebar.index = pos
 
     def _sidebar_comment(self) -> Comment | None:
-        """Comment behind the current sidebar selection, filter-aware."""
         idx = self.sidebar.index
         if idx is None or idx >= len(self._sidebar_indices):
             return None
@@ -1188,9 +1183,8 @@ class ReviewApp(App):
     def _text_object(self, kind: str, around: bool) -> None:
         """vim iw/aw, is/as, ip/ap. Selects the object into visual mode.
 
-        Always takes the whole object, both ends of it, in visual mode
-        too. Extending only forwards from the cursor is what `vf.`
-        already does.
+        Takes both ends of the object, in visual mode too. Unlike vim,
+        which extends forwards only.
         """
         p, o = self.cur
         text = self.texts[p]
@@ -1261,7 +1255,6 @@ class ReviewApp(App):
         event.stop()
 
     def _changes_key(self, event) -> None:
-        """n/N cycle through the changes list with wraparound."""
         ch = event.character
         count = len(self.changes_panel)
         if count == 0 or ch not in ("n", "N"):
@@ -1497,7 +1490,6 @@ class ReviewApp(App):
         return [c for c in self.comment_list if self._covers_cursor(c)]
 
     def _comment_index_at_cursor(self) -> int | None:
-        """Index into comment_list of the first comment under the cursor."""
         for i, c in enumerate(self.comment_list):
             if self._covers_cursor(c):
                 return i
@@ -1543,7 +1535,6 @@ class ReviewApp(App):
     # ------------------------------------------------------------------
 
     def _record(self, label: str, before: Snapshot | None, after: Snapshot | None) -> None:
-        """Push a change onto the undo stack, dropping any redo branch."""
         self.undo_stack.append(Edit(label, before, after))
         self.redo_stack.clear()
 
@@ -1551,8 +1542,7 @@ class ReviewApp(App):
         """Find the live comment a snapshot describes.
 
         Every mutation reloads the document, so a snapshot cannot hold
-        a Comment. Span plus text identifies one well enough, and two
-        identical comments on one span are interchangeable anyway.
+        a Comment. Span plus text is enough to re-find one.
         """
         for comment in self.review.comments():
             if (
@@ -1714,7 +1704,6 @@ class ReviewApp(App):
         self.push_screen(SearchInput(placeholder="author or text"), on_result)
 
     def action_toggle_sidebar(self) -> None:
-        # the width change triggers DocumentView.on_resize -> rebuild
         if self.sidebar.has_class("visible"):
             self.sidebar.remove_class("visible")
             if self.sidebar_filter:

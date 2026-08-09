@@ -1001,11 +1001,6 @@ def test_status_bar_survives_long_filename(tmp_path):
     asyncio.run(scenario())
 
 
-# ----------------------------------------------------------------------
-# Markdown documents
-# ----------------------------------------------------------------------
-
-
 @pytest.fixture
 def md_sample(tmp_path):
     path = tmp_path / "sample.md"
@@ -1066,11 +1061,6 @@ def test_markdown_export_fails_cleanly(md_sample):
     review = open_review(md_sample)
     with pytest.raises(RuntimeError, match="no docx export"):
         review.export_docx()
-
-
-# ----------------------------------------------------------------------
-# Reference overlay
-# ----------------------------------------------------------------------
 
 
 REFERENCE_CHECK = """\

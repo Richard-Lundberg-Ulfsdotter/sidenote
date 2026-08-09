@@ -116,11 +116,6 @@ def test_unparsable_file_yields_no_entries():
     assert parse_entries("# Notes\n\nJust prose, no tables.\n") == {}
 
 
-# ----------------------------------------------------------------------
-# Citation detection in the document
-# ----------------------------------------------------------------------
-
-
 def test_citation_under_the_cursor():
     text = "Diet matters [@jouanneNutrient2021] in pregnancy."
     off = text.index("jouanne")

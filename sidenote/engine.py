@@ -101,8 +101,9 @@ class Comment:
     """A comment anchored in the document.
 
     start and end are (paragraph_index, offset) positions. A point
-    comment has start == end. The node references are used internally
-    for deletion.
+    comment has start == end. node is whatever the engine needs to find
+    this comment again, an XML element for ODT and a sidecar record for
+    Markdown, and callers should not read it.
 
     orphan marks a comment whose anchor text could not be found, which
     only happens for sidecar-backed formats where the document can be
@@ -255,10 +256,6 @@ class OdtReview:
         self.path = Path(path)
         self.doc = load(str(self.path))
 
-    # ------------------------------------------------------------------
-    # Document structure
-    # ------------------------------------------------------------------
-
     @property
     def paragraphs(self) -> list[Element]:
         out: list[Element] = []
@@ -285,10 +282,6 @@ class OdtReview:
     def para_texts(self) -> list[str]:
         return [_plain_text(p) for p in self.paragraphs]
 
-    # ------------------------------------------------------------------
-    # Comments
-    # ------------------------------------------------------------------
-
     def comments(self) -> list[Comment]:
         out: list[Comment] = []
         open_ranges: dict[str, Comment] = {}
@@ -308,7 +301,6 @@ class OdtReview:
         return out
 
     def _marks(self) -> list[tuple[int, int, Element]]:
-        """All zero-width markers as (paragraph, offset, element)."""
         marks: list[tuple[int, int, Element]] = []
         for i, par in enumerate(self.paragraphs):
             self._collect_marks(par, i, 0, marks)
@@ -335,10 +327,6 @@ class OdtReview:
                 else:
                     offset = self._collect_marks(node, para_idx, offset, marks)
         return offset
-
-    # ------------------------------------------------------------------
-    # Tracked changes (read only)
-    # ------------------------------------------------------------------
 
     def changes(self) -> list[TrackedChange]:
         """Tracked changes in document order.
@@ -544,10 +532,6 @@ class OdtReview:
         while f"cmt{n}" in existing:
             n += 1
         return f"cmt{n}"
-
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
 
     def save(self, path: str | Path | None = None) -> Path:
         target = Path(path) if path else self.path

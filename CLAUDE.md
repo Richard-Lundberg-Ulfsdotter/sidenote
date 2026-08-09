@@ -190,3 +190,13 @@ sidecar JSON file. See README.md for usage and keys.
   added and at 120 when `u` was, and a truncated footer in the picture
   looks broken. Check the footer after any binding change and rerun
   the tool, 130 is the current minimum that still shows `? help`.
+- Comment style. Document unevenly. A hard constraint or a decision
+  that looks like a bug earns a paragraph, a helper whose name says
+  what it does earns nothing. Do not add a docstring to every
+  function, and do not restate the signature in prose. State a fact
+  once, at the interface, and let the other engine point at it rather
+  than repeating the sentence, `MarkdownReview.add_comment` refers to
+  `OdtReview.add_comment` for exactly this reason. Rationale that runs
+  past a couple of lines belongs in this file, not in the code. No
+  dashed banner separators outside `tui.py`, the files are small
+  enough to grep.

@@ -73,7 +73,6 @@ class ReferenceCheck:
     pdf_dir: Path | None = None
 
     def lookup(self, key: str) -> list[RefEntry]:
-        """Every row citing this key, in file order."""
         return self.entries.get(key, [])
 
     def pdf_for(self, key: str) -> Path | None:
