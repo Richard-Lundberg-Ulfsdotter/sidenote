@@ -31,7 +31,14 @@ from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.widgets import Footer, Input, Label, ListItem, ListView, Static, TextArea
 
-from sidenote.engine import Comment, Pos, TrackedChange, open_review
+from sidenote.engine import (
+    MARKDOWN_SUFFIXES,
+    Comment,
+    Pos,
+    TrackedChange,
+    open_review,
+)
+from sidenote.markdown import CITATION_RE, hard_lines, markup_spans
 from sidenote.refcheck import (
     ReferenceCheck,
     RefEntry,
@@ -39,23 +46,18 @@ from sidenote.refcheck import (
     load_reference_check,
     open_pdf,
 )
+from sidenote.theme import WORD_THEME, DocStyles, styles_for
 
 WORD_RE = re.compile(r"[\wÀ-ɏ]+")
-# a pandoc citation key in the source, @smithFolateIntake2020
-CITATION_RE = re.compile(r"@([A-Za-z0-9_][\w.:#$%&+?<>~/-]*)")
 # vim's sentence rule. . ! or ? then any closing brackets or quotes,
 # followed by whitespace or the end of the paragraph.
 SENTENCE_END_RE = re.compile(r"[.!?][)\]\"'’”]*(?=\s|$)")
 # f/F/t/T reversed, for ,
 FIND_REVERSE = {"f": "F", "F": "f", "t": "T", "T": "t"}
 
-STYLE_COMMENT = "underline yellow"
-STYLE_SEARCH = "black on green"
-STYLE_SEARCH_CURRENT = "black on orange1"
-STYLE_SELECTION = "reverse"
-STYLE_CURSOR = "black on bright_yellow"
-STYLE_INSERTION = "green"
-STYLE_DELETION = "underline red"
+# Gruvbox unless the shell or --theme asks for another. The word theme
+# is registered at mount, so it is not available any earlier than that.
+DEFAULT_THEME = "gruvbox"
 
 # reference-check status word -> colour in the reference overlay
 STATUS_STYLES = {"OK": "green", "FIXED": "cyan", "WEAK": "yellow"}
@@ -126,6 +128,12 @@ HELP_TEXT = """\
   /              search (smartcase)
   n N            next/previous match (wraps, count in status bar)
   * #            search word under cursor forward/backward
+
+[b]Appearance[/b]
+  M              markdown styling on/off (markdown files)
+                 markers stay in place, only the colours change
+  ctrl+p         command palette, themes among them. `word`
+                 is black on white with Word's own marks
 
 [b]Other[/b]
   X              export to docx (not for markdown)
@@ -198,7 +206,7 @@ def wrap_offsets(text: str, width: int) -> list[tuple[int, int]]:
     """Greedy word wrap. Returns (start, end) slices into text."""
     width = max(width, 8)
     spans: list[tuple[int, int]] = []
-    for seg_start, seg_text in _split_hard_lines(text):
+    for seg_start, seg_text in hard_lines(text):
         pos = 0
         while True:
             remaining = seg_text[pos:]
@@ -312,15 +320,6 @@ def citations_at(text: str, offset: int) -> list[str]:
         cut = keys.index(at_cursor[2])
         keys = keys[cut:] + keys[:cut]
     return keys
-
-
-def _split_hard_lines(text: str) -> list[tuple[int, str]]:
-    out = []
-    start = 0
-    for part in text.split("\n"):
-        out.append((start, part))
-        start += len(part) + 1
-    return out
 
 
 class CommentInput(ModalScreen[str | None]):
@@ -618,8 +617,9 @@ class ReviewApp(App):
 
     TITLE = "sidenote"
 
-    # Gruvbox by default. TEXTUAL_THEME still wins if the user sets it.
-    theme: Reactive[str] = Reactive(os.environ.get("TEXTUAL_THEME") or "gruvbox")
+    # The wanted theme is applied at mount instead, once `word` exists.
+    # A class default has to name a theme Textual already knows.
+    theme: Reactive[str] = Reactive(DEFAULT_THEME)
 
     # the panel width literal must match PANEL_WIDTH, ctrl+left/right
     # overrides it per widget from there
@@ -679,16 +679,27 @@ class ReviewApp(App):
         path: str | Path,
         author: str | None = None,
         refcheck: str | Path | None = None,
+        theme: str | None = None,
     ):
         super().__init__()
+        self.register_theme(WORD_THEME)
         self.path = Path(path)
         self.author = author
         self.refcheck_path = Path(refcheck) if refcheck else None
+        # applied in on_mount, setting it here would refresh the CSS of
+        # an app that has not started yet
+        self.wanted_theme = (
+            theme or os.environ.get("TEXTUAL_THEME") or DEFAULT_THEME
+        )
+        self.doc_styles: DocStyles = styles_for(self.get_theme(self.wanted_theme))
         self.review = open_review(self.path)
         self.texts: list[str] = self.review.para_texts()
         self.comment_list: list[Comment] = self.review.comments()
         self.doc_changes: list[TrackedChange] = self.review.changes()
         self.show_deletions = True
+        self.is_markdown = self.path.suffix.lower() in MARKDOWN_SUFFIXES
+        self.markdown_render = self.is_markdown
+        self._markup_cache: dict[int, list[tuple[int, int, str]]] = {}
         self.cur: Pos = (0, 0)
         self.anchor: Pos | None = None
         self.goal_col = 0
@@ -727,9 +738,38 @@ class ReviewApp(App):
         self.changes_panel = self.query_one("#changes", SideList)
         self.changes_panel.border_title = "changes"
         self.doc_view.focus()
+        self._apply_wanted_theme()
         self.rebuild_lines()
         self._update_sidebar()
         self._report_anchor_health()
+
+    def _apply_wanted_theme(self) -> None:
+        """Switch to the asked-for theme, warning rather than raising."""
+        wanted = self.wanted_theme
+        if wanted not in self.available_themes:
+            self.notify(
+                f"unknown theme {wanted!r}, using {DEFAULT_THEME}",
+                severity="warning",
+            )
+            wanted = DEFAULT_THEME
+        self.theme = wanted
+
+    def watch_theme(self, theme_name: str) -> None:
+        """Follow the theme with the document pane's own styles.
+
+        Textual restyles the chrome by itself. The pane paints its
+        marks from `doc_styles`, and those have to change with the
+        background, an underlined yellow comment vanishes on white.
+        Runs before the widgets exist on the first pass, hence the
+        guard, and the sidebar is rebuilt because its items carry
+        baked-in markup.
+        """
+        self.doc_styles = styles_for(self.get_theme(theme_name))
+        self._markup_cache = {}
+        if not getattr(self, "lines", None):
+            return
+        self._update_sidebar(keep_index=self.sidebar.index)
+        self._repaint()
 
     def _report_anchor_health(self) -> None:
         """Warn on open when sidecar anchors no longer fit the document."""
@@ -803,8 +843,8 @@ class ReviewApp(App):
         line = self.lines[row]
         if isinstance(line, DelLine):
             out = RichText("- " + line.text, no_wrap=True)
-            out.stylize("red strike", 2)
-            out.stylize("red", 0, 2)
+            out.stylize(self.doc_styles.deleted_line, 2)
+            out.stylize(self.doc_styles.deleted_prefix, 0, 2)
             return out
         text = self.texts[line.para] or " "
         out = RichText(
@@ -826,31 +866,36 @@ class ReviewApp(App):
     def _para_styles(self, para: int) -> list[tuple[int, int, str]]:
         """Style ranges over one paragraph's text, cursor applied last."""
         n = len(self.texts[para])
-        ranges: list[tuple[int, int, str]] = []
+        styles = self.doc_styles
+        # markdown first, so a comment or the cursor paints over it,
+        # and copied because everything below appends to the list
+        ranges: list[tuple[int, int, str]] = (
+            list(self._markup_ranges(para)) if self.markdown_render else []
+        )
         for ch in self.doc_changes:
             if ch.kind == "insertion":
                 s, e = ch.start, ch.end
                 if s[0] <= para <= e[0]:
                     lo = s[1] if s[0] == para else 0
                     hi = e[1] if e[0] == para else n
-                    ranges.append((lo, min(hi, n), STYLE_INSERTION))
+                    ranges.append((lo, min(hi, n), styles.insertion))
             elif ch.start[0] == para and n:
                 o = min(ch.start[1], n - 1)
-                ranges.append((o, o + 1, STYLE_DELETION))
+                ranges.append((o, o + 1, styles.deletion))
         for c in self.comment_list:
             s, e = c.start, max(c.end, (c.start[0], c.start[1] + 1))
             if s[0] <= para <= e[0]:
                 lo = s[1] if s[0] == para else 0
                 hi = e[1] if e[0] == para else n
-                ranges.append((lo, min(hi, n), STYLE_COMMENT))
+                ranges.append((lo, min(hi, n), styles.comment))
         if self.search_query:
             qlen = len(self.search_query)
             for mp, mo in self.search_matches:
                 if mp == para:
                     style = (
-                        STYLE_SEARCH_CURRENT
+                        styles.search_current
                         if (mp, mo) == self.cur
-                        else STYLE_SEARCH
+                        else styles.search
                     )
                     ranges.append((mo, min(mo + qlen, n), style))
         sel = self._selection()
@@ -859,10 +904,28 @@ class ReviewApp(App):
             if s[0] <= para <= e[0]:
                 lo = s[1] if s[0] == para else 0
                 hi = e[1] if e[0] == para else n
-                ranges.append((lo, min(hi, n), STYLE_SELECTION))
+                ranges.append((lo, min(hi, n), styles.selection))
         if self.cur[0] == para:
-            ranges.append((self.cur[1], self.cur[1] + 1, STYLE_CURSOR))
+            ranges.append((self.cur[1], self.cur[1] + 1, styles.cursor))
         return ranges
+
+    def _markup_ranges(self, para: int) -> list[tuple[int, int, str]]:
+        """Markdown styling for one paragraph, scanned once and kept.
+
+        A wrapped paragraph asks for this on every visible line of it,
+        every frame, and the answer only changes when the text or the
+        theme does.
+        """
+        cached = self._markup_cache.get(para)
+        if cached is None:
+            kinds = self.doc_styles.markup
+            cached = [
+                (lo, hi, kinds[kind])
+                for lo, hi, kind in markup_spans(self.texts[para])
+                if kind in kinds
+            ]
+            self._markup_cache[para] = cached
+        return cached
 
     def _update_statusbar(self) -> None:
         self.status_widget.update(self._status_text())
@@ -925,7 +988,10 @@ class ReviewApp(App):
                     else self.texts[sp][so:so + 30] + " [...]"
                 )
                 anchor = anchor if len(anchor) <= 40 else anchor[:37] + "..."
-                head = f"[b]{i + 1}.[/b] [yellow]{escape(anchor)}[/yellow]"
+                colour = self.doc_styles.anchor
+                head = (
+                    f"[b]{i + 1}.[/b] [{colour}]{escape(anchor)}[/{colour}]"
+                )
             else:
                 head = f"[b]{i + 1}.[/b] [dim]para {sp + 1} note[/dim]"
             if c.orphan:
@@ -1413,6 +1479,10 @@ class ReviewApp(App):
             self.notify(f"deleted text {state}")
             event.stop()
             return
+        elif ch == "M":
+            self._toggle_markdown()
+            event.stop()
+            return
         elif ch == "G":
             self.cur = (len(self.texts) - 1, 0)
             self.goal_col = 0
@@ -1444,6 +1514,24 @@ class ReviewApp(App):
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
+
+    def _toggle_markdown(self) -> None:
+        """Style the markdown, or show it as flat source.
+
+        Only the styling changes, never the text, so this is a repaint
+        and not a relayout, and a comment cannot notice which way it is
+        set.
+        """
+        if not self.is_markdown:
+            self.notify(
+                "markdown styling is for markdown documents",
+                severity="warning",
+            )
+            return
+        self.markdown_render = not self.markdown_render
+        state = "on" if self.markdown_render else "off"
+        self.notify(f"markdown styling {state}")
+        self._repaint()
 
     def action_visual(self) -> None:
         self.anchor = None if self.anchor is not None else self.cur
@@ -1526,6 +1614,7 @@ class ReviewApp(App):
         self.texts = self.review.para_texts()
         self.comment_list = self.review.comments()
         self.doc_changes = self.review.changes()
+        self._markup_cache.clear()
         self.rebuild_lines()
         self._update_sidebar(keep_index=keep)
         self.notify(message)

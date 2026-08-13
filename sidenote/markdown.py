@@ -22,6 +22,7 @@ import getpass
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -74,6 +75,144 @@ def split_blocks(source: str) -> list[str]:
     if current:
         blocks.append("\n".join(current))
     return blocks
+
+
+def hard_lines(text: str) -> list[tuple[int, str]]:
+    """The text's own lines as (offset, line)."""
+    out: list[tuple[int, str]] = []
+    start = 0
+    for line in text.split("\n"):
+        out.append((start, line))
+        start += len(line) + 1
+    return out
+
+
+# a pandoc citation key in the source, @smithFolateIntake2020. The
+# capture group is the bare key, which is what the reference overlay
+# looks up.
+CITATION_RE = re.compile(r"@([A-Za-z0-9_][\w.:#$%&+?<>~/-]*)")
+
+# One display span of the source, (start, end, kind). The kinds name
+# what the run is, the frontend chooses the colours.
+Span = tuple[int, int, str]
+
+_FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+_HEADING_RE = re.compile(r"^(#{1,6}[ \t]+)(.*)$")
+_QUOTE_RE = re.compile(r"^(\s*(?:>[ \t]?)+)")
+_BULLET_RE = re.compile(r"^(\s*(?:[-*+]|\d+[.)])[ \t]+)")
+# a line of nothing but one repeated rule character, so a thematic
+# break or the underline of a setext heading
+_RULE_RE = re.compile(r"^\s*([=*_-])(?:[ \t]*\1){2,}[ \t]*$")
+# a pipe-table delimiter row, |---|:--:|
+_TABLE_RULE_RE = re.compile(r"^[\s|:-]*-[\s|:-]*$")
+
+# Inline patterns as (pattern, body group, kind). Everything in the
+# match outside the body group is markup, which includes a link's URL.
+# Order is priority, a match overlapping one already taken is skipped,
+# so emphasis cannot start inside a code span and `_` in snake_case is
+# left alone by the lookarounds.
+_INLINE = (
+    (re.compile(r"(`+)([^`]+?)\1"), 2, "code"),
+    (
+        re.compile(r"(!?\[)([^\]\n]*)(\]\()([^)\s]+)((?:[ \t]+\"[^\"]*\")?\))"),
+        2,
+        "link",
+    ),
+    (re.compile(r"(<)([a-z][\w+.-]*:[^>\s]+)(>)"), 2, "link"),
+    (re.compile(r"(~~)(?=\S)(.+?)(?<=\S)(~~)"), 2, "strike"),
+    (re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1"), 2, "strong"),
+    (
+        re.compile(r"(?<![\w*])(\*|_)(?=[^\s*_])([^*_]+?)(?<=[^\s*_])\1(?![\w*])"),
+        2,
+        "emphasis",
+    ),
+    (CITATION_RE, 0, "cite"),
+)
+
+
+def markup_spans(block: str) -> list[Span]:
+    """Where the markdown markup and the prose it marks up sit.
+
+    Display only. Nothing is removed or reordered, the spans style the
+    source where it stands, so a rendered view and a raw view share one
+    set of offsets and comment anchors are indifferent to which is on.
+
+    Later spans win where they overlap, which is how a heading's `#`
+    ends up markup-grey inside an otherwise blue heading line.
+    """
+    # empty spans come from a blank line in a code block or a heading
+    # with nothing after the hashes, and mean nothing to a renderer
+    return [span for span in _scan_block(block) if span[0] < span[1]]
+
+
+def _scan_block(block: str) -> list[Span]:
+    lines = hard_lines(block)
+    spans: list[Span] = []
+    if lines and _FENCE_RE.match(lines[0][1]):
+        # split_blocks keeps a fenced block whole, so the whole
+        # paragraph is code apart from the fences themselves
+        for off, line in lines:
+            kind = "marker" if _FENCE_RE.match(line) else "code"
+            spans.append((off, off + len(line), kind))
+        return spans
+
+    claimed = bytearray(len(block))
+    # the previous line's prose, which a setext underline turns into a
+    # heading after the fact
+    previous: tuple[int, int] | None = None
+    for off, line in lines:
+        end = off + len(line)
+        if _RULE_RE.match(line):
+            spans.append((off, end, "marker"))
+            if previous is not None and line.lstrip()[0] in "=-":
+                spans.append((*previous, "heading"))
+            previous = None
+            continue
+        if "|" in line and _TABLE_RULE_RE.match(line):
+            spans.append((off, end, "marker"))
+            previous = None
+            continue
+
+        lo = off
+        quote = _QUOTE_RE.match(line)
+        if quote:
+            lo = off + quote.end()
+            spans.append((off, lo, "marker"))
+            spans.append((lo, end, "quote"))
+        rest = block[lo:end]
+        heading = _HEADING_RE.match(rest)
+        if heading:
+            spans.append((lo, lo + heading.end(1), "marker"))
+            lo += heading.end(1)
+            spans.append((lo, end, "heading"))
+        else:
+            bullet = _BULLET_RE.match(rest)
+            if bullet:
+                spans.append((lo, lo + bullet.end(1), "marker"))
+                lo += bullet.end(1)
+        for i, ch in enumerate(block[lo:end], lo):
+            if ch == "|":
+                spans.append((i, i + 1, "marker"))
+        _scan_inline(block, lo, end, claimed, spans)
+        previous = (lo, end)
+    return spans
+
+
+def _scan_inline(
+    block: str, lo: int, hi: int, claimed: bytearray, spans: list[Span]
+) -> None:
+    for pattern, group, kind in _INLINE:
+        for m in pattern.finditer(block, lo, hi):
+            start, stop = m.span()
+            if any(claimed[start:stop]):
+                continue
+            claimed[start:stop] = b"\x01" * (stop - start)
+            body_start, body_stop = m.span(group)
+            spans.append((body_start, body_stop, kind))
+            if start < body_start:
+                spans.append((start, body_start, "marker"))
+            if body_stop < stop:
+                spans.append((body_stop, stop, "marker"))
 
 
 def _find_all(text: str, needle: str) -> list[int]:

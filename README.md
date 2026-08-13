@@ -45,6 +45,7 @@ sidenote manuscript.odt --author "Richard Lundberg-Ulfsdotter"
 
 sidenote manuscript.md               # markdown too, see below
 sidenote manuscript.md --refcheck ../reference-check.md
+sidenote manuscript.md --theme word  # black on white, as Word shows a page
 
 sidenote list manuscript.odt         # print comments
 sidenote check manuscript.md         # report orphaned comments
@@ -109,6 +110,14 @@ sidenote check manuscript.md || echo "a comment lost its anchor"
 There is no docx export for markdown. The comments are for reading in the
 TUI and in `sidenote list`.
 
+Markdown files open with the markup styled, headings in colour, emphasis
+in italics, code and citation keys set apart, and the markers themselves
+dimmed. `M` turns that off and back on. Nothing is hidden or reflowed
+either way. The `**` stays where the author typed it, only its colour
+changes, so a character offset means the same thing in both views, a
+comment cannot tell which is on, and `char 34` in the status bar is
+`char 34` in the file. `M` is a repaint, not a rewrap.
+
 ## Keys
 
 | Key            | Action                                        |
@@ -143,6 +152,8 @@ TUI and in `sidenote list`.
 | `S`            | open and focus tracked-changes panel / close  |
 | `>` `<`        | jump to next/previous tracked change          |
 | `D`            | show/hide deleted text lines                  |
+| `M`            | markdown styling on/off (markdown files)      |
+| `ctrl+p`       | command palette, themes among them            |
 | `tab`          | switch focus between document and sidebar     |
 | `ctrl+←/→`     | move the divider, resizing panel and document |
 | `X`            | export to docx (background, not for markdown) |
@@ -185,8 +196,8 @@ The panel stops at 20 columns and never leaves the document less than 30.
 Both panels share the width, so the split stays where you put it when
 switching between comments and changes.
 
-Search matches highlight in green with the current match in orange, and
-the status bar shows the match position (`/folate 2/5`). `*`/`#` use
+Search matches highlight with the current match in a colour of its own,
+and the status bar shows the match position (`/folate 2/5`). `*`/`#` use
 whole-word matching, as in vim.
 
 ### Reference check
@@ -262,9 +273,39 @@ newline, `ctrl+s` saves, escape cancels.
 
 ### Theme
 
-The interface uses gruvbox by default. Any other Textual theme can be
-picked with the `TEXTUAL_THEME` environment variable, for example
-`TEXTUAL_THEME=nord sidenote paper.odt`.
+The interface uses gruvbox by default. Any other theme can be picked with
+`--theme` or the `TEXTUAL_THEME` environment variable, and `ctrl+p` opens
+the command palette, which switches theme in a running session.
+
+```sh
+sidenote paper.md --theme word
+TEXTUAL_THEME=nord sidenote paper.odt
+```
+
+`word` is sidenote's own, a page as Word shows one. Black on white,
+headings in Word's title blue, commented text on a pale yellow fill,
+tracked insertions underlined in blue and deletions struck in red. The
+document pane chooses its marks from the theme's background rather than
+its name, so every light theme gets the readable set and every dark one
+keeps the original, an underlined yellow comment being invisible on
+white paper.
+
+The font belongs to the terminal, not to the program, so Aptos has to
+come from the terminal. Aptos Mono is the monospace member of the family
+and the one to point a terminal at. Alacritty can restyle the window you
+are already in, over its IPC socket, which also works from a keybinding.
+
+```sh
+alacritty msg config 'font.normal.family="Aptos Mono"'   # this window
+alacritty msg config -r                                  # and back
+```
+
+Or start a window with it, which is the only option in kitty.
+
+```sh
+alacritty -o 'font.normal.family="Aptos Mono"' -e sidenote paper.md --theme word
+kitty -o font_family="Aptos Mono" sidenote paper.md --theme word
+```
 
 ## Architecture
 
@@ -277,11 +318,15 @@ sidenote/
   markdown.py Markdown model, same interface. Blocks as paragraphs,
               comments in a sidecar JSON file, anchors relocated by
               their surrounding text when the document has moved.
+              `markup_spans()` says where the markup sits, for styling
+              the source in place.
   tui.py      Textual frontend. Vim navigation, text objects, visual
               selection, search, comment modal, sidebar, help. Keeps a
               display-line map back to engine positions. The document
               pane renders only visible lines, so navigation stays
               fast on long documents.
+  theme.py    The `word` theme, and the pane's own styles for comments,
+              search, changes and markdown, one set per background.
   refcheck.py Reads a manuscript's reference-check.md, indexes its
               table rows by citation key, and locates the full-text
               PDFs. Optional, absent for most documents.
@@ -314,8 +359,9 @@ elements) at the requested offset.
 - No editing of the document text, this is a reviewer, not an editor.
 - The docx round-trip goes through LibreOffice, so complex Word layout
   may shift slightly on export. Comments and text survive.
-- Markdown is shown as source, not rendered. Offsets then match the file
-  you edit, which is what anchoring needs.
+- Markdown is styled, not rendered. The markers are dimmed rather than
+  hidden, because offsets have to keep matching the file you edit, which
+  is what anchoring needs.
 - Markdown comments cannot be exported to docx, and a markdown comment
   whose anchor text and surrounding wording are both rewritten is marked
   orphaned rather than relocated.

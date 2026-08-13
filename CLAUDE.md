@@ -13,6 +13,7 @@ sidecar JSON file. See README.md for usage and keys.
 .venv/bin/sidenote /tmp/demo.odt        # open the TUI
 .venv/bin/sidenote check /tmp/demo.md   # orphan report, nonzero on any
 .venv/bin/sidenote /tmp/paper.md --refcheck ref-check.md  # r overlay
+.venv/bin/sidenote /tmp/demo.md --theme word  # black on white
 ```
 
 ## Design notes
@@ -49,6 +50,38 @@ sidecar JSON file. See README.md for usage and keys.
   rather than rendered so offsets match the file the user edits. The
   `.md` is opened read-only and never written, everything goes to
   `<stem>.sidenote.json`.
+- Markdown styling (`M`). `markdown.markup_spans` returns
+  `(start, end, kind)` over one block, kinds not colours, so the
+  engine layer stays free of the palette. It styles the source where
+  it stands and never removes or reorders a character. That is the
+  whole design constraint. Concealing `**` would need a display
+  column to source offset map for the cursor, the wrap, the search
+  hits and every comment range, and the cursor would vanish when it
+  landed on a hidden character. Dimming the markers costs none of
+  that, so `M` is a `_repaint()` and not a `rebuild_lines()`, and a
+  comment cannot tell which way it is set. Spans go first in
+  `_para_styles` so a comment or the cursor paints over them, they
+  are cached per paragraph in `_markup_cache` because a wrapped
+  paragraph asks once per visible line per frame, and the cache is
+  cleared by a reload or a theme change, not by a resize. Later
+  spans win where they overlap, which is what puts a marker-grey `#`
+  inside a blue heading line. `_INLINE` is ordered by priority and a
+  match overlapping a claimed region is skipped, which is what keeps
+  emphasis out of a code span and leaves `snake_case` alone.
+- Themes. `theme.py` pairs a Textual `Theme` for the chrome with a
+  `DocStyles` for the pane, because the pane paints its own marks and
+  an underlined yellow comment is invisible on white. `styles_for`
+  branches on `theme.dark`, not on the name, so every light theme gets
+  the readable set. `ReviewApp.watch_theme` reloads `doc_styles`, and
+  it runs before the widgets exist on the first pass, hence the guard
+  on `self.lines`. The sidebar is rebuilt there too, its items carry
+  markup baked in at build time. The `word` theme is registered in
+  `__init__` but applied in `on_mount`, setting `theme` earlier
+  refreshes the CSS of an app that has not started, and a class-level
+  default has to name a theme Textual already knows, which is why
+  `TEXTUAL_THEME` is read into `wanted_theme` instead of into the
+  reactive. Aptos is a terminal profile setting, no program can change
+  the font from inside.
 - Markdown anchoring. The sidecar cannot move when the document is
   edited elsewhere, so each endpoint stores `before`/`after` context
   (`CONTEXT` = 40 chars) and is relocated by `_Anchor.locate` on load.
@@ -85,7 +118,10 @@ sidecar JSON file. See README.md for usage and keys.
 - Key handling. Movement lives in `ReviewApp.on_key` (guarded when a
   modal is up or the document pane is not focused, ends with
   `event.stop()`), actions live in BINDINGS. `e` is vim word-end, docx
-  export is `X`. Literal `[` in help text must be escaped as `\\[`,
+  export is `X`. The display toggles `D` and `M` sit in `on_key`
+  rather than in BINDINGS on purpose. A shown binding widens the
+  footer, and the footer is in `docs/screenshot.svg` at the narrowest
+  width that still fits it. Literal `[` in help text must be escaped as `\\[`,
   and all user-supplied strings (comment text, filenames, anchors) go
   through `rich.markup.escape` before landing in a Static, or markup
   parsing crashes.

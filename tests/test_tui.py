@@ -8,7 +8,9 @@ from textual.widgets import Static
 
 from sidenote.cli import make_sample
 from sidenote.engine import OdtReview, open_review
+from sidenote.theme import DARK_STYLES, LIGHT_STYLES
 from sidenote.tui import (
+    DEFAULT_THEME,
     DOC_MIN_WIDTH,
     PANEL_MIN_WIDTH,
     PANEL_STEP,
@@ -1203,6 +1205,82 @@ def test_reference_key_without_a_check_file(md_sample, monkeypatch):
             await pilot.press("r")
             await pilot.pause()
             assert len(app.screen_stack) == 1
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_markdown_styling_toggles_without_moving_the_text(md_sample):
+    """M repaints, it does not relayout. Same characters, same offsets."""
+
+    async def scenario():
+        app = ReviewApp(md_sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            assert app.markdown_render
+            assert any(
+                style == app.doc_styles.markup["heading"]
+                for _, _, style in app._para_styles(0)
+            )
+            styled = [
+                app.render_doc_line(i).plain
+                for i, line in enumerate(app.lines)
+                if line is not None
+            ]
+            layout = list(app.lines)
+
+            await pilot.press("M")
+            await pilot.pause()
+            assert not app.markdown_render
+            assert app.lines == layout
+            assert [
+                app.render_doc_line(i).plain
+                for i, line in enumerate(app.lines)
+                if line is not None
+            ] == styled
+            assert not any(
+                style == app.doc_styles.markup["heading"]
+                for _, _, style in app._para_styles(0)
+            )
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_markdown_styling_is_only_for_markdown(sample):
+    async def scenario():
+        app = ReviewApp(sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            assert not app.is_markdown
+            assert not app.markdown_render
+            await pilot.press("M")
+            await pilot.pause()
+            assert not app.markdown_render
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_word_theme_swaps_the_document_styles(sample):
+    """The pane's marks follow the background, not the theme's name."""
+
+    async def scenario():
+        app = ReviewApp(sample, theme="word")
+        async with app.run_test(size=(100, 30)) as pilot:
+            assert app.theme == "word"
+            assert app.doc_styles is LIGHT_STYLES
+            app.theme = "gruvbox"
+            await pilot.pause()
+            assert app.doc_styles is DARK_STYLES
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_unknown_theme_falls_back(sample):
+    async def scenario():
+        app = ReviewApp(sample, theme="no-such-theme")
+        async with app.run_test(size=(100, 30)) as pilot:
+            assert app.theme == DEFAULT_THEME
             await pilot.press("q")
 
     asyncio.run(scenario())

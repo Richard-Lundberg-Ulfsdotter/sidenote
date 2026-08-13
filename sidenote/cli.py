@@ -2,6 +2,7 @@
 
 sidenote FILE                 open the TUI (.odt, .docx or .md)
 sidenote FILE --refcheck F    read reference rows from a given file
+sidenote FILE --theme word    black on white, as Word shows a page
 sidenote list FILE            list comments
 sidenote check FILE           report orphaned comments, nonzero on any
 sidenote changes FILE         list tracked changes
@@ -131,6 +132,11 @@ def main(argv: list[str] | None = None) -> int:
         help="reference-check.md to read for the r key "
         "(default: found beside the document)",
     )
+    p_view.add_argument(
+        "--theme",
+        help="colour theme, 'word' for black on white (default: gruvbox, "
+        "or $TEXTUAL_THEME)",
+    )
 
     p_list = sub.add_parser("list", help="list comments")
     p_list.add_argument("file", type=Path)
@@ -177,7 +183,10 @@ def main(argv: list[str] | None = None) -> int:
         from sidenote.tui import ReviewApp
 
         ReviewApp(
-            args.file, author=args.author, refcheck=args.refcheck
+            args.file,
+            author=args.author,
+            refcheck=args.refcheck,
+            theme=args.theme,
         ).run()
         return 0
 

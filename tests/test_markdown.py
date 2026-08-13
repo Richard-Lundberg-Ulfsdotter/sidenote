@@ -5,7 +5,12 @@ import json
 import pytest
 
 from sidenote.engine import open_review
-from sidenote.markdown import MarkdownReview, sidecar_path, split_blocks
+from sidenote.markdown import (
+    MarkdownReview,
+    markup_spans,
+    sidecar_path,
+    split_blocks,
+)
 
 SOURCE = """# Title
 
@@ -326,3 +331,54 @@ def test_unreadable_sidecar_is_reported(doc):
     sidecar_path(doc).write_text("{not json", encoding="utf-8")
     with pytest.raises(RuntimeError, match="cannot read"):
         MarkdownReview(doc)
+
+
+def _named(block):
+    return {(block[lo:hi], kind) for lo, hi, kind in markup_spans(block)}
+
+
+def test_markup_spans_name_the_markup_and_what_it_marks():
+    block = (
+        "Maternal **folate** intake in *week 20* "
+        "[@smithFolate2020], see <https://doi.org/10.1234/x>."
+    )
+    styled = _named(block)
+    assert ("folate", "strong") in styled
+    assert ("week 20", "emphasis") in styled
+    assert ("@smithFolate2020", "cite") in styled
+    assert ("https://doi.org/10.1234/x", "link") in styled
+    assert ("**", "marker") in styled
+
+
+def test_markup_spans_leave_code_and_snake_case_alone():
+    block = "Use `ffq_week20` for pre_pregnancy_bmi in the model."
+    styled = _named(block)
+    assert ("ffq_week20", "code") in styled
+    assert not [kind for text, kind in styled if kind == "emphasis"]
+
+
+def test_markup_spans_call_a_fenced_block_code():
+    block = "```r\nx <- 1  # **not bold**\n```"
+    assert [(block[lo:hi], kind) for lo, hi, kind in markup_spans(block)] == [
+        ("```r", "marker"),
+        ("x <- 1  # **not bold**", "code"),
+        ("```", "marker"),
+    ]
+
+
+def test_markup_spans_read_block_markers():
+    assert ("Title", "heading") in _named("# Title")
+    assert ("# ", "marker") in _named("# Title")
+    assert ("Title", "heading") in _named("Title\n=====")
+    assert ("A claim.", "quote") in _named("> A claim.")
+    assert ("|-----|----:|", "marker") in _named(
+        "| Exposure | OR |\n|-----|----:|\n| Tertile 1 | 1.00 |"
+    )
+
+
+def test_markup_spans_stay_inside_the_source():
+    """Styling only. Every span indexes the block it came from."""
+    for block in split_blocks(SOURCE):
+        for lo, hi, kind in markup_spans(block):
+            assert 0 <= lo < hi <= len(block)
+            assert isinstance(kind, str)
