@@ -71,17 +71,26 @@ sidecar JSON file. See README.md for usage and keys.
 - Themes. `theme.py` pairs a Textual `Theme` for the chrome with a
   `DocStyles` for the pane, because the pane paints its own marks and
   an underlined yellow comment is invisible on white. `styles_for`
-  branches on `theme.dark`, not on the name, so every light theme gets
-  the readable set. `ReviewApp.watch_theme` reloads `doc_styles`, and
-  it runs before the widgets exist on the first pass, hence the guard
-  on `self.lines`. The sidebar is rebuilt there too, its items carry
-  markup baked in at build time. The `word` theme is registered in
+  checks `STYLES_BY_NAME` first and falls back to `theme.dark`, so a
+  theme sidenote ships gets marks matched to its exact background and
+  every other one still gets a readable set. The fallback sets stay in
+  ANSI colour names on purpose, an unknown theme should borrow the
+  terminal's palette rather than a foreign one. `DARK_STYLES` is now
+  only ever the fallback, do not tune it to any one background.
+  `ReviewApp.watch_theme` reloads `doc_styles`, and it runs before the
+  widgets exist on the first pass, hence the guard on `self.lines`.
+  The sidebar is rebuilt there too, its items carry markup baked in at
+  build time. `gruvbox-material` and `word` are registered in
   `__init__` but applied in `on_mount`, setting `theme` earlier
   refreshes the CSS of an app that has not started, and a class-level
-  default has to name a theme Textual already knows, which is why
-  `TEXTUAL_THEME` is read into `wanted_theme` instead of into the
-  reactive. Aptos is a terminal profile setting, no program can change
-  the font from inside.
+  default has to name a theme Textual already knows, hence
+  `BOOTSTRAP_THEME` (Textual's own `gruvbox`, the nearest thing it
+  knows to the default) and `TEXTUAL_THEME` read into `wanted_theme`
+  instead of into the reactive. The default palette is the nvim
+  colorscheme at `background = hard`, `foreground = material`, lifted
+  from `gruvbox_material#get_palette`, so it can be re-diffed against
+  the plugin. Aptos is a terminal profile setting, no program can
+  change the font from inside.
 - Markdown anchoring. The sidecar cannot move when the document is
   edited elsewhere, so each endpoint stores `before`/`after` context
   (`CONTEXT` = 40 chars) and is relocated by `_Anchor.locate` on load.

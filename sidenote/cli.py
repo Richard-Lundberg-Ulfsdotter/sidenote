@@ -134,8 +134,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_view.add_argument(
         "--theme",
-        help="colour theme, 'word' for black on white (default: gruvbox, "
-        "or $TEXTUAL_THEME)",
+        help="colour theme, 'word' for black on white "
+        "(default: gruvbox-material, or $TEXTUAL_THEME)",
     )
 
     p_list = sub.add_parser("list", help="list comments")

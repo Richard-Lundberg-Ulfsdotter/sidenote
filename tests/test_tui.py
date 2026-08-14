@@ -8,7 +8,7 @@ from textual.widgets import Static
 
 from sidenote.cli import make_sample
 from sidenote.engine import OdtReview, open_review
-from sidenote.theme import DARK_STYLES, LIGHT_STYLES
+from sidenote.theme import DARK_STYLES, GRUVBOX_STYLES, LIGHT_STYLES
 from sidenote.tui import (
     DEFAULT_THEME,
     DOC_MIN_WIDTH,
@@ -891,10 +891,10 @@ def test_tracked_changes_in_tui(tracked_sample):
             await pilot.pause()
             # insertion range styled in paragraph 0
             styles = app._para_styles(0)
-            assert (6, 15, "green") in styles
+            assert (6, 15, app.doc_styles.insertion) in styles
             # deletion point marked in paragraph 1
             styles = app._para_styles(1)
-            assert any(s == "underline red" for _, _, s in styles)
+            assert any(s == app.doc_styles.deletion for _, _, s in styles)
             # > and < jump between changes with wraparound
             await pilot.press(">")
             assert app.cur == (0, 6)
@@ -1271,6 +1271,19 @@ def test_word_theme_swaps_the_document_styles(sample):
             app.theme = "gruvbox"
             await pilot.pause()
             assert app.doc_styles is DARK_STYLES
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_default_theme_is_gruvbox_material(sample):
+    """The default carries its own pane styles, not the background's."""
+
+    async def scenario():
+        app = ReviewApp(sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            assert app.theme == "gruvbox-material"
+            assert app.doc_styles is GRUVBOX_STYLES
             await pilot.press("q")
 
     asyncio.run(scenario())

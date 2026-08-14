@@ -46,7 +46,7 @@ from sidenote.refcheck import (
     load_reference_check,
     open_pdf,
 )
-from sidenote.theme import WORD_THEME, DocStyles, styles_for
+from sidenote.theme import GRUVBOX_THEME, WORD_THEME, DocStyles, styles_for
 
 WORD_RE = re.compile(r"[\wÀ-ɏ]+")
 # vim's sentence rule. . ! or ? then any closing brackets or quotes,
@@ -55,9 +55,13 @@ SENTENCE_END_RE = re.compile(r"[.!?][)\]\"'’”]*(?=\s|$)")
 # f/F/t/T reversed, for ,
 FIND_REVERSE = {"f": "F", "F": "f", "t": "T", "T": "t"}
 
-# Gruvbox unless the shell or --theme asks for another. The word theme
-# is registered at mount, so it is not available any earlier than that.
-DEFAULT_THEME = "gruvbox"
+# gruvbox-material unless the shell or --theme asks for another. Both
+# it and word are registered in __init__, so neither can be named by
+# the class-level reactive below, which Textual reads before that.
+DEFAULT_THEME = "gruvbox-material"
+# only ever seen between the reactive's default and on_mount. Textual's
+# own gruvbox is the nearest thing it knows, so the swap does not flash.
+BOOTSTRAP_THEME = "gruvbox"
 
 # reference-check status word -> colour in the reference overlay
 STATUS_STYLES = {"OK": "green", "FIXED": "cyan", "WEAK": "yellow"}
@@ -617,9 +621,9 @@ class ReviewApp(App):
 
     TITLE = "sidenote"
 
-    # The wanted theme is applied at mount instead, once `word` exists.
-    # A class default has to name a theme Textual already knows.
-    theme: Reactive[str] = Reactive(DEFAULT_THEME)
+    # The wanted theme is applied at mount instead, once the registered
+    # themes exist. A class default has to name one Textual already knows.
+    theme: Reactive[str] = Reactive(BOOTSTRAP_THEME)
 
     # the panel width literal must match PANEL_WIDTH, ctrl+left/right
     # overrides it per widget from there
@@ -682,6 +686,7 @@ class ReviewApp(App):
         theme: str | None = None,
     ):
         super().__init__()
+        self.register_theme(GRUVBOX_THEME)
         self.register_theme(WORD_THEME)
         self.path = Path(path)
         self.author = author

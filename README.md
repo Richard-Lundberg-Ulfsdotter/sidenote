@@ -273,22 +273,31 @@ newline, `ctrl+s` saves, escape cancels.
 
 ### Theme
 
-The interface uses gruvbox by default. Any other theme can be picked with
-`--theme` or the `TEXTUAL_THEME` environment variable, and `ctrl+p` opens
-the command palette, which switches theme in a running session.
+The interface uses `gruvbox-material` by default. Any other theme can be
+picked with `--theme` or the `TEXTUAL_THEME` environment variable, and
+`ctrl+p` opens the command palette, which switches theme in a running
+session.
 
 ```sh
 sidenote paper.md --theme word
 TEXTUAL_THEME=nord sidenote paper.odt
 ```
 
+`gruvbox-material` is the palette of the nvim colorscheme of that name,
+at `background = hard` and `foreground = material`, so a manuscript
+looks the same here as in the editor it was written in. Search fills in
+the colorscheme's `Search` green and the current hit its `IncSearch`
+red, the selection is `Visual` grey, headings are orange as `Title` is,
+and the cursor is a yellow block.
+
 `word` is sidenote's own, a page as Word shows one. Black on white,
 headings in Word's title blue, commented text on a pale yellow fill,
-tracked insertions underlined in blue and deletions struck in red. The
-document pane chooses its marks from the theme's background rather than
-its name, so every light theme gets the readable set and every dark one
-keeps the original, an underlined yellow comment being invisible on
-white paper.
+tracked insertions underlined in blue and deletions struck in red.
+
+A theme without a set of its own gets one chosen by its background, so
+every other light theme is still readable and every other dark one
+keeps the original marks, an underlined yellow comment being invisible
+on white paper.
 
 The font belongs to the terminal, not to the program, so Aptos has to
 come from the terminal. Aptos Mono is the monospace member of the family
