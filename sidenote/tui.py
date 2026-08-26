@@ -140,6 +140,7 @@ HELP_TEXT = """\
                  is black on white with Word's own marks
 
 [b]Other[/b]
+  R              re-read the file after editing it elsewhere
   X              export to docx (not for markdown)
   escape         leave visual mode / clear search
   q              quit
@@ -672,6 +673,7 @@ class ReviewApp(App):
         Binding("S", "toggle_changes", "changes"),
         Binding("r", "reference", "reference"),
         Binding("X", "export", "docx"),
+        Binding("R", "reload", show=False),
         Binding("question_mark", "help", "help"),
         Binding("escape", "clear_transient", show=False),
         Binding("ctrl+left", "widen_panel", show=False),
@@ -716,6 +718,7 @@ class ReviewApp(App):
         self.lines: list[Line | None] = []
         self._para_line_start: list[int] = []
         self.search_query = ""
+        self.search_pattern: re.Pattern[str] | None = None
         self.search_matches: list[Pos] = []
         self.sidebar_filter = ""
         self._sidebar_indices: list[int] = []
@@ -1142,6 +1145,13 @@ class ReviewApp(App):
     def _max_off(self, i: int) -> int:
         return max(self._para_len(i) - 1, 0)
 
+    def _clamp_cursor(self) -> None:
+        """Pull the cursor back inside a document that shrank under it."""
+        para = min(self.cur[0], len(self.texts) - 1)
+        off = min(self.cur[1], self._max_off(para))
+        self.cur = (para, off)
+        self.goal_col = off
+
     def _move_horizontal(self, delta: int) -> None:
         p, o = self.cur
         o += delta
@@ -1346,15 +1356,10 @@ class ReviewApp(App):
         if word is None:
             self.notify("no word under cursor", severity="warning")
             return
-        self.search_query = word
         pattern = re.compile(
             rf"(?<![\wÀ-ɏ]){re.escape(word)}(?![\wÀ-ɏ])"
         )
-        self.search_matches = [
-            (i, m.start())
-            for i, t in enumerate(self.texts)
-            for m in pattern.finditer(t)
-        ]
+        self._apply_search(word, pattern)
         self._jump_to(self.search_matches, forward=forward)
 
     def _scroll_view(self, delta: int) -> None:
@@ -1556,8 +1561,7 @@ class ReviewApp(App):
         if self.anchor is not None:
             self.anchor = None
         elif self.search_query:
-            self.search_query = ""
-            self.search_matches = []
+            self._clear_search()
         else:
             return
         self._repaint()
@@ -1613,15 +1617,23 @@ class ReviewApp(App):
             text = "\n".join(parts)
         return text if len(text) <= 600 else text[:600] + " […]"
 
-    def _after_mutation(self, message: str) -> None:
-        keep = self.sidebar.index if self.focused is self.sidebar else None
-        self.review = open_review(self.path)
+    def _reload_document(self, review, keep_index: int | None = None) -> None:
+        """Adopt a freshly opened document and rebuild what derives from it.
+
+        Takes the review rather than opening one so a caller can refuse
+        a bad file before any of this state has changed.
+        """
+        self.review = review
         self.texts = self.review.para_texts()
         self.comment_list = self.review.comments()
         self.doc_changes = self.review.changes()
         self._markup_cache.clear()
         self.rebuild_lines()
-        self._update_sidebar(keep_index=keep)
+        self._update_sidebar(keep_index=keep_index)
+
+    def _after_mutation(self, message: str) -> None:
+        keep = self.sidebar.index if self.focused is self.sidebar else None
+        self._reload_document(open_review(self.path), keep)
         self.notify(message)
 
     # ------------------------------------------------------------------
@@ -1755,6 +1767,26 @@ class ReviewApp(App):
             on_result,
         )
 
+    def _apply_search(self, query: str, pattern: re.Pattern[str]) -> None:
+        """Run a search and keep the pattern, not only the words.
+
+        A reload re-runs it against the new text, and `*` matches whole
+        words where `/` matches anywhere, so the pattern is the part
+        worth remembering.
+        """
+        self.search_query = query
+        self.search_pattern = pattern
+        self.search_matches = [
+            (i, m.start())
+            for i, t in enumerate(self.texts)
+            for m in pattern.finditer(t)
+        ]
+
+    def _clear_search(self) -> None:
+        self.search_query = ""
+        self.search_pattern = None
+        self.search_matches = []
+
     def action_search(self) -> None:
         if self.focused is self.sidebar:
             self._sidebar_filter_prompt()
@@ -1763,16 +1795,11 @@ class ReviewApp(App):
         def on_result(query: str | None) -> None:
             if not query:
                 return
-            self.search_query = query
             flags = re.IGNORECASE if query.islower() else 0
-            self.search_matches = [
-                (i, m.start())
-                for i, t in enumerate(self.texts)
-                for m in re.finditer(re.escape(query), t, flags)
-            ]
+            self._apply_search(query, re.compile(re.escape(query), flags))
             if not self.search_matches:
                 self.notify(f"no matches for {query!r}", severity="warning")
-                self.search_query = ""
+                self._clear_search()
                 return
             self._jump_to(self.search_matches, forward=True)
             self._repaint()
@@ -1850,6 +1877,39 @@ class ReviewApp(App):
         self.panel_width = width
         self.sidebar.styles.width = width
         self.changes_panel.styles.width = width
+
+    def action_reload(self) -> None:
+        """Re-read the document after an editor changed it elsewhere.
+
+        Markdown is opened read-only, so editing it in another window
+        is the normal way to act on a comment, and this is how the
+        review catches up without losing the session. Comments come
+        back through the same re-anchoring as on open. The sidecar is
+        not written, a reload only reads, so the anchors it stores stay
+        as they were until the next comment change saves them.
+        """
+        try:
+            fresh = open_review(self.path)
+        except Exception as exc:
+            # a file caught mid-save fails in whatever way its parser
+            # fails, and no such failure should end the session
+            self.notify(f"cannot reload. {exc}", severity="error")
+            return
+        if not fresh.para_texts():
+            self.notify(
+                f"{self.path.name} has no text, keeping the open copy",
+                severity="warning",
+            )
+            return
+        keep = self.sidebar.index if self.focused is self.sidebar else None
+        self._reload_document(fresh, keep)
+        self._clamp_cursor()
+        self.anchor = None
+        if self.search_pattern is not None:
+            self._apply_search(self.search_query, self.search_pattern)
+        self._repaint()
+        self.notify(f"reloaded {self.path.name}")
+        self._report_anchor_health()
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())

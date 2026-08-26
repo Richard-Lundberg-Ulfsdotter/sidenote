@@ -100,6 +100,13 @@ anchored words together with their surroundings is the case that cannot be
 recovered. That comment is marked `orphaned` in the sidebar and kept at its
 last known position rather than dropped, and sidenote says so on open.
 
+`R` re-reads the document without closing the review, which is what you want
+when the markdown is open in an editor in the next window. Comments come back
+through the same re-anchoring as on open, the cursor stays where the new text
+allows, a running search is re-run, and sidenote reports afterwards whether
+anything lost its anchor. A reload only reads. It never writes the sidecar,
+so the stored anchors stay as they were until the next comment change.
+
 `sidenote check` prints the same report and exits nonzero when anything is
 orphaned, which makes it usable as a pre-commit hook.
 
@@ -156,6 +163,7 @@ comment cannot tell which is on, and `char 34` in the status bar is
 | `ctrl+p`       | command palette, themes among them            |
 | `tab`          | switch focus between document and sidebar     |
 | `ctrl+←/→`     | move the divider, resizing panel and document |
+| `R`            | re-read the file after editing it elsewhere   |
 | `X`            | export to docx (background, not for markdown) |
 | `?`            | help (scrolls with `j`/`k`, escape closes)    |
 | `escape`       | back to document / leave visual / clear search|

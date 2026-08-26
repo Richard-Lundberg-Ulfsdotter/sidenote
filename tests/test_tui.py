@@ -1297,3 +1297,113 @@ def test_unknown_theme_falls_back(sample):
             await pilot.press("q")
 
     asyncio.run(scenario())
+
+
+def test_reload_picks_up_an_external_edit(md_sample):
+    """R re-reads the file and re-anchors the comments in it."""
+    review = open_review(md_sample)
+    off = review.para_texts()[1].index("neurodevelopment")
+    review.add_comment((1, off), (1, off + 16), "spell out", author="R")
+    review.save()
+
+    async def scenario():
+        app = ReviewApp(md_sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            before = len(app.texts)
+            assert app.comment_list[0].start[0] == 1
+            md_sample.write_text(
+                "# Note\n\nAdded above while the review was open.\n\n"
+                + md_sample.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            await pilot.press("R")
+            await pilot.pause()
+            assert len(app.texts) == before + 2
+            assert app.texts[0] == "# Note"
+            # the comment followed its wording down the document
+            comment = app.comment_list[0]
+            assert comment.start[0] == 3
+            assert not comment.orphan
+            assert (
+                app.texts[3][comment.start[1]:comment.end[1]]
+                == "neurodevelopment"
+            )
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_reload_keeps_the_cursor_inside_a_shorter_document(md_sample):
+    async def scenario():
+        app = ReviewApp(md_sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("G", "$")
+            await pilot.pause()
+            assert app.cur[0] == len(app.texts) - 1
+            md_sample.write_text("# Sample manuscript\n", encoding="utf-8")
+            await pilot.press("R")
+            await pilot.pause()
+            assert app.texts == ["# Sample manuscript"]
+            assert app.cur == (0, len("# Sample manuscript") - 1)
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_reload_refuses_an_empty_file(md_sample):
+    """A file caught mid-save should not blank the review."""
+
+    async def scenario():
+        app = ReviewApp(md_sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            before = app.texts
+            md_sample.write_text("", encoding="utf-8")
+            await pilot.press("R")
+            await pilot.pause()
+            assert app.texts == before
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_reload_reruns_a_live_search(md_sample):
+    async def scenario():
+        app = ReviewApp(md_sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("slash")
+            await pilot.pause()
+            for ch in "folate":
+                await pilot.press(ch)
+            await pilot.press("enter")
+            await pilot.pause()
+            before = len(app.search_matches)
+            md_sample.write_text(
+                md_sample.read_text(encoding="utf-8")
+                + "\n\nFolate again, and folate once more.\n",
+                encoding="utf-8",
+            )
+            await pilot.press("R")
+            await pilot.pause()
+            assert len(app.search_matches) == before + 2
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+
+
+def test_reload_survives_an_unreadable_file(md_sample):
+    """A file that cannot be read leaves the open review alone."""
+
+    async def scenario():
+        app = ReviewApp(md_sample)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            before = app.texts
+            md_sample.unlink()
+            await pilot.press("R")
+            await pilot.pause()
+            assert app.texts == before
+            await pilot.press("q")
+
+    asyncio.run(scenario())

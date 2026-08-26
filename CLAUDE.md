@@ -117,6 +117,22 @@ sidecar JSON file. See README.md for usage and keys.
   totals, orphans, and whether the document moved since the last save.
   The TUI notifies on mount via `_report_anchor_health`, `sidenote
   check` prints the same and exits 1 on any orphan for use in hooks.
+- Reload (`R`). `action_reload` opens a second review before touching
+  any state, so an unreadable or empty file leaves the review as it
+  was, then hands it to `_reload_document`, the same path every
+  mutation takes. The extra work is what a mutation does not need,
+  the text can now be shorter (`_clamp_cursor`), a visual selection
+  spans wording that may be gone, and `search_matches` are stale
+  offsets. That last one is why searches keep `search_pattern` and not
+  only `search_query`, `*` matches whole words where `/` matches
+  anywhere, so re-running from the words alone would quietly change
+  what a live search means. Reload does not save. Writing the sidecar
+  would rebase every anchor onto the new text and make successive
+  external edits survive better, but it turns a read key into a write
+  and a mid-save truncation into data loss, so the anchors stay as
+  stored until a comment change saves them. Empty is refused rather
+  than shown because nothing in the offset math has a paragraph 0 to
+  work with.
 - Performance model. `DocumentView` is a line-API `ScrollView`, its
   `render_line` styles only visible rows. The wrap layout is cached in
   `ReviewApp.lines` and rebuilt only by `rebuild_lines()` (resize,
