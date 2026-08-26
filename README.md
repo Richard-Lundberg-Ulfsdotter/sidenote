@@ -2,12 +2,18 @@
 
 Review Word (docx), LibreOffice (ODT) and Markdown documents entirely from the keyboard. Add comments in a fast terminal UI.
 
-Read a document in a TUI, select any span of text and attach a comment. In
-Word and LibreOffice documents the comments are written as native ODF
-inline annotations (`office:annotation` + `office:annotation-end`), so they
-open as ordinary comments in LibreOffice. Export to docx goes through
-headless LibreOffice, which maps annotation ranges to real Word comment
-ranges (`commentRangeStart`/`commentRangeEnd`) that co-authors see in Word.
+Read a document in a TUI, select any span of text and attach a comment.
+
+A Word document is commented in place. sidenote writes real Word comments
+(`commentRangeStart`/`commentRangeEnd` plus `word/comments.xml`) into the
+file it opened, rewrites only the two parts it has to, and copies every
+other part of the docx through byte for byte. There is no conversion step
+in either direction, so the file a co-author gets back is the file they
+sent plus the comments.
+
+A LibreOffice document is commented as native ODF inline annotations
+(`office:annotation` + `office:annotation-end`). Export to docx goes
+through headless LibreOffice.
 
 Markdown works differently. The file is left exactly as it is and comments
 go to a sidecar JSON file beside it, so the document stays a plain build
@@ -32,9 +38,10 @@ python -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-Needs Python 3.10+ and, for the docx round-trip, LibreOffice (`soffice`) on
-PATH. Everything else is pure Python (odfpy + Textual). Developed on Linux,
-should work anywhere Textual and LibreOffice run.
+Needs Python 3.10+. LibreOffice (`soffice`) on PATH is needed only to
+export an ODT to docx. Reviewing a docx does not use it. Everything else
+is pure Python (odfpy + Textual). Developed on Linux, should work
+anywhere Textual runs.
 
 ## Usage
 
@@ -51,24 +58,48 @@ sidenote list manuscript.odt         # print comments
 sidenote check manuscript.md         # report orphaned comments
 sidenote changes manuscript.odt      # print tracked changes
 sidenote add manuscript.odt --para 2 --start 10 --end 24 --text "..."
+sidenote add manuscript.odt --para 2 --start 10 --end-para 3 --end 5 --text "..."
 sidenote export manuscript.odt       # write manuscript.docx next to it
 sidenote sample demo.odt             # generate a test document
+sidenote sample demo.docx            # the same text as a Word document
 sidenote sample demo.md              # the same text as markdown
 ```
 
 The author name defaults to `$SIDENOTE_AUTHOR`, then the login name.
+`list` and `changes` read any of the three formats. `check` is about
+sidecar anchors, so on a docx or an ODT it says the anchors are in the
+document and exits zero.
 
 ### docx workflow
 
-Opening a `.docx` converts it to a sibling `.odt` working copy via headless
-LibreOffice and opens that. Existing Word comments come along. The working
-copy is reused on reopening as long as it is newer than the docx, so your
-comments are not lost. If you receive a new version of the docx (newer than
-the working copy), it is reconverted and the old working copy is replaced.
+Opening a `.docx` reviews it in place. Comments a co-author already made
+are read from `word/comments.xml` and shown with their author and date,
+new comments are added beside them, and every comment saves straight back
+into the file. Nothing is converted and there is no working copy.
 
-Exporting (`X` in the TUI, or the `export` subcommand) writes
-`<name>.docx` next to the file. When you opened a docx, that is the
-original file, so export means "write my comments back into the docx".
+Only `word/document.xml` and `word/comments.xml` are rewritten, and inside
+document.xml only the runs that need a marker. Headers, footers, styles,
+images, footnotes, fields, numbering, settings and Word's own comment
+threading tables come through untouched. That matters when the document
+goes back to someone working in Word, who otherwise receives a file that
+lost half of itself on the way to a comment.
+
+Anchoring is by character offset, so a comment can cover part of a word,
+cross a formatting boundary or run from one paragraph into the next. A run
+is split only where a marker has to go, and its run properties, images and
+field codes are carried into both halves.
+
+Every comment is already in the file by the time you see it on screen, so
+there is nothing to export. `sidenote export --outdir` writes a copy
+somewhere else if you want one, and `X` in the TUI is a plain re-save.
+
+Tracked changes in a docx are read the same way as in an ODT, `w:ins` for
+insertions and `w:del` for deletions, and shown read-only, inline and in
+the `S` panel.
+
+Footnotes and endnotes live in parts of their own and are not shown. They
+are preserved untouched, and a footnote reference takes up no room in the
+running text, so offsets and anchors are unaffected.
 
 ### Markdown workflow
 
@@ -100,13 +131,6 @@ anchored words together with their surroundings is the case that cannot be
 recovered. That comment is marked `orphaned` in the sidebar and kept at its
 last known position rather than dropped, and sidenote says so on open.
 
-`R` re-reads the document without closing the review, which is what you want
-when the markdown is open in an editor in the next window. Comments come back
-through the same re-anchoring as on open, the cursor stays where the new text
-allows, a running search is re-run, and sidenote reports afterwards whether
-anything lost its anchor. A reload only reads. It never writes the sidecar,
-so the stored anchors stay as they were until the next comment change.
-
 `sidenote check` prints the same report and exits nonzero when anything is
 orphaned, which makes it usable as a pre-commit hook.
 
@@ -124,6 +148,20 @@ either way. The `**` stays where the author typed it, only its colour
 changes, so a character offset means the same thing in both views, a
 comment cannot tell which is on, and `char 34` in the status bar is
 `char 34` in the file. `M` is a repaint, not a rewrap.
+
+### Reloading
+
+`R` re-reads the document without closing the review, whatever its format,
+which is what you want when the file is also open in an editor in the next
+window. The cursor stays where the new text allows, a visual selection is
+dropped, and a running search is re-run against the new text rather than
+kept as stale positions. A file that cannot be read, or that has become
+empty, leaves the open review exactly as it was.
+
+A reload only reads. For markdown that means the sidecar is not written,
+so comments come back through the same re-anchoring as on open, sidenote
+reports afterwards whether anything lost its anchor, and the stored
+anchors stay as they were until the next comment change.
 
 ## Keys
 
@@ -169,7 +207,7 @@ comment cannot tell which is on, and `char 34` in the status bar is
 | `escape`       | back to document / leave visual / clear search|
 | `q`            | quit                                          |
 
-`f` and `t` search the paragraph rather than the display line, since the
+`f` and `t` search the paragraph rather than the display line, because the
 line breaks are only wrapping and move when the pane is resized. The
 sentence rule is vim's, a `.`, `!` or `?` with any closing brackets or
 quotes after it, then whitespace or the end of the paragraph. Text
@@ -273,8 +311,8 @@ subcommand prints the same list in the terminal. Format-only changes
 are not shown, and accepting or rejecting changes stays in LibreOffice
 or Word.
 
-Comments save immediately when added, edited, or deleted, to the ODT
-itself or to the markdown sidecar.
+Comments save immediately when added, edited, or deleted, to the docx or
+ODT itself or to the markdown sidecar.
 The comment dialog quotes the full selected text (across paragraphs,
 capped at 600 characters) above a multi-line editor, enter inserts a
 newline, `ctrl+s` saves, escape cancels.
@@ -330,8 +368,12 @@ kitty -o font_family="Aptos Mono" sidenote paper.md --theme word
 sidenote/
   engine.py   ODT model. Load, plain-text paragraphs, comment anchoring
               at (paragraph, character offset), edit/delete, save,
-              docx import and export via headless LibreOffice.
+              docx export via headless LibreOffice.
               `open_review()` picks the engine that fits the file.
+  docx.py     Word model, same interface. Walks document.xml for
+              paragraphs, runs and markers, splices comment markers into
+              the bytes, splitting a run only where one has to go, and
+              rewrites the zip with every other part copied through.
   markdown.py Markdown model, same interface. Blocks as paragraphs,
               comments in a sidecar JSON file, anchors relocated by
               their surrounding text when the document has moved.
@@ -347,35 +389,62 @@ sidenote/
   refcheck.py Reads a manuscript's reference-check.md, indexes its
               table rows by citation key, and locates the full-text
               PDFs. Optional, absent for most documents.
-  cli.py      Entry point. TUI plus list/check/add/export/sample
-              subcommands.
+  cli.py      Entry point. TUI plus list/check/add/changes/export/sample
+              subcommands, and the sample document in all three formats.
 tests/
-  test_engine.py   Round-trip tests including a soffice docx export
-                   check that the comment survives as a Word comment.
+  test_engine.py   ODT round-trips, tracked-change parsing, and a
+                   soffice export check that the comment survives as a
+                   Word comment.
+  test_docx.py     Word round-trips, run splitting around images,
+                   fields, hyperlinks and table cells, and the check
+                   that only the two parts change.
   test_markdown.py Sidecar round-trips and the re-anchoring cases,
                    including that the markdown is never modified.
   test_refcheck.py Table parsing and citation detection under the
                    cursor, including grouped citations.
+  test_tui.py      The frontend under Textual's pilot. Motions, text
+                   objects, search, sidebar, undo, and that an engine
+                   error is reported rather than fatal.
 ```
 
 The engines are deliberately frontend-agnostic and share one interface, so
 the TUI and CLI never branch on file format. A future Neovim plugin can call
 `open_review()` (or the CLI) without touching the TUI.
 
-Key invariant. Annotation elements contribute zero width to the extracted
+Key invariant. Comment markers contribute zero width to the extracted
 plain text, so adding a comment never shifts the character offsets of the
-surrounding text. Insertion splits text nodes (and multi-space `text:s`
-elements) at the requested offset.
+surrounding text. Insertion splits the document at the requested offset,
+text nodes and multi-space `text:s` elements in ODT, runs and their `w:t`
+children in docx.
 
 ## Known limits
 
-- Tables, footnotes, and frames render as their flattened paragraph text.
+- Table cells are separate paragraphs in both formats. Footnotes and text
+  frames are where the two diverge. An ODT flattens both into the running
+  text, a footnote landing mid-sentence with its citation number. A docx
+  keeps footnotes and endnotes in parts of their own and text boxes inside
+  a drawing, so neither is shown and neither can be commented on, and the
+  same goes for embedded objects and equations. All of it is preserved
+  untouched either way.
 - Deleted text is shown on separate display lines, not woven into the
   running sentence. Comments anchored to deleted text are not shown.
+- Word "moved" tracked changes are not marked as moves. The text shows at
+  its new place as ordinary text and the copy at the old place is hidden,
+  which is the document as accepting the move would leave it.
 - No comment threads or replies (single-level comments, as in ODF).
 - No editing of the document text, this is a reviewer, not an editor.
-- The docx round-trip goes through LibreOffice, so complex Word layout
-  may shift slightly on export. Comments and text survive.
+- Deleting a docx comment removes its markers but leaves the run it split
+  in two pieces. The text, the formatting and what Word displays are
+  identical, and Word rejoins the runs on its own next save.
+- A comment sidenote adds to a docx carries no `w14:paraId`, which is the
+  optional Word extension that records threading and resolved state. Word
+  reads such a comment as an ordinary unresolved one. Replying to it or
+  resolving it in Word works and adds the paraId there.
+- The docx engine is verified against Word for the web, LibreOffice and
+  its own test suite. Desktop Word has not been tried.
+- Exporting an ODT to docx goes through LibreOffice, so complex Word
+  layout may shift on that path. Comments and text survive. Reviewing a
+  docx does not use that path at all.
 - Markdown is styled, not rendered. The markers are dimmed rather than
   hidden, because offsets have to keep matching the file you edit, which
   is what anchoring needs.
@@ -393,9 +462,11 @@ elements) at the requested offset.
 .venv/bin/python tools/make_screenshot.py   # redraw docs/screenshot.svg
 ```
 
-The suite covers the engine round-trips (including a headless LibreOffice
-docx export, skipped when `soffice` is missing) and drives the TUI
-headlessly through Textual's pilot. CI runs it on Python 3.10 and 3.14.
+The suite covers all three engines, unzipping the docx it produces to
+check the comment markers pair up and that no other part moved, and
+drives the TUI headlessly through Textual's pilot. The one test needing
+LibreOffice is the ODT export, skipped when `soffice` is missing. CI runs
+it on Python 3.10 and 3.14.
 
 ## License
 

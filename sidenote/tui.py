@@ -2,7 +2,8 @@
 
 Vim-style navigation over a read-only rendering of the document, with a
 character-level visual mode for selecting the span a comment anchors to.
-Whatever `engine.open_review` returns works here, ODT and Markdown alike.
+Whatever `engine.open_review` returns works here, docx, ODT and
+Markdown alike.
 
 Performance model. The wrap layout (display line -> paragraph slice) is
 computed once per resize or document change and cached in
@@ -145,8 +146,8 @@ HELP_TEXT = """\
   escape         leave visual mode / clear search
   q              quit
 
-Comments save immediately, to the ODT itself or to the
-markdown sidecar beside the document. In the comment box,
+Comments save immediately, to the document itself or to
+the markdown sidecar beside it. In the comment box,
 enter inserts a newline, ctrl+s saves, escape cancels.
 This help scrolls with j/k, escape or q closes it.\
 """
@@ -1681,6 +1682,16 @@ class ReviewApp(App):
             self.review.update_comment(found, target.text)
         return True
 
+    def _failed(self, what: str, exc: Exception) -> None:
+        """Report an engine error rather than dying of it.
+
+        A malformed document part or a file that cannot be written is
+        worth saying out loud. It is not worth taking down a review
+        that is holding a cursor, a selection and a running search.
+        Every comment mutation goes through one of these.
+        """
+        self.notify(f"cannot {what}. {exc}", severity="error", timeout=10)
+
     def _step(self, undoing: bool) -> None:
         stack = self.undo_stack if undoing else self.redo_stack
         word = "undo" if undoing else "redo"
@@ -1691,15 +1702,19 @@ class ReviewApp(App):
         target, current = (
             (edit.before, edit.after) if undoing else (edit.after, edit.before)
         )
-        if not self._restore(target, current):
-            self.notify(
-                f"cannot {word}, that comment has changed since",
-                severity="error",
-            )
+        try:
+            if not self._restore(target, current):
+                self.notify(
+                    f"cannot {word}, that comment has changed since",
+                    severity="error",
+                )
+                return
+            stack.pop()
+            (self.redo_stack if undoing else self.undo_stack).append(edit)
+            self.review.save()
+        except Exception as exc:
+            self._failed(word, exc)
             return
-        stack.pop()
-        (self.redo_stack if undoing else self.undo_stack).append(edit)
-        self.review.save()
         self._after_mutation(f"{word} {edit.label}")
 
     def action_undo(self) -> None:
@@ -1716,9 +1731,15 @@ class ReviewApp(App):
         def on_result(text: str | None) -> None:
             if not text:
                 return
-            added = self.review.add_comment(start, end, text, author=self.author)
+            try:
+                added = self.review.add_comment(
+                    start, end, text, author=self.author
+                )
+                self.review.save()
+            except Exception as exc:
+                self._failed("save the comment", exc)
+                return
             self._record("comment", None, Snapshot.of(added))
-            self.review.save()
             self.anchor = None
             self._after_mutation("comment saved")
 
@@ -1735,11 +1756,15 @@ class ReviewApp(App):
             if not text or text == target.text:
                 return
             before = Snapshot.of(target)
-            self.review.update_comment(target, text)
+            try:
+                self.review.update_comment(target, text)
+                self.review.save()
+            except Exception as exc:
+                self._failed("update the comment", exc)
+                return
             self._record(
                 "edit", before, replace(before, text=text, date=target.date)
             )
-            self.review.save()
             self._after_mutation("comment updated")
 
         byline = f"comment by {target.author}" if target.author else ""
@@ -1757,9 +1782,14 @@ class ReviewApp(App):
         def on_result(confirmed: bool | None) -> None:
             if not confirmed:
                 return
-            self._record("delete", Snapshot.of(target), None)
-            self.review.delete_comment(target)
-            self.review.save()
+            before = Snapshot.of(target)
+            try:
+                self.review.delete_comment(target)
+                self.review.save()
+            except Exception as exc:
+                self._failed("delete the comment", exc)
+                return
+            self._record("delete", before, None)
             self._after_mutation("comment deleted")
 
         self.push_screen(

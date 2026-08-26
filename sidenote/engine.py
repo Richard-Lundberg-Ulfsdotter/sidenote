@@ -84,6 +84,12 @@ def docx_to_odt(path: str | Path, force: bool = False) -> Path:
     An existing sibling .odt is reused when it is at least as new as the
     docx, so comments already added to the working copy are not lost on
     reopening the same docx.
+
+    Not the docx path any more. `open_review` sends a docx to
+    `DocxReview`, which edits the OOXML in place and leaves the rest of
+    the file alone. This stays for the case where the ODT model is
+    genuinely wanted, and it is still a lossy conversion in both
+    directions.
     """
     path = Path(path)
     target = path.with_suffix(".odt")
@@ -105,10 +111,11 @@ class Comment:
     this comment again, an XML element for ODT and a sidecar record for
     Markdown, and callers should not read it.
 
-    orphan marks a comment whose anchor text could not be found, which
-    only happens for sidecar-backed formats where the document can be
-    edited outside sidenote. It is always False for ODT, where the
-    anchor is an element inside the document itself.
+    orphan marks a comment whose anchor could not be found. For
+    Markdown that is the ordinary case of the document having been
+    edited elsewhere. For ODT it never happens, the anchor being an
+    element in the document. For docx it means a comment with no
+    marker in the body, which is a broken file rather than a moved one.
     """
 
     name: str | None
@@ -553,7 +560,8 @@ def open_review(path: str | Path):
     """Open a document with the engine that fits its format.
 
     Markdown goes to `MarkdownReview`, which keeps comments in a
-    sidecar file, everything else to `OdtReview`. Both expose the same
+    sidecar file, docx to `DocxReview`, which edits the OOXML in place,
+    everything else to `OdtReview`. All three expose the same
     interface, so callers do not branch on format.
     """
     path = Path(path)
@@ -561,4 +569,8 @@ def open_review(path: str | Path):
         from sidenote.markdown import MarkdownReview
 
         return MarkdownReview(path)
+    if path.suffix.lower() == ".docx":
+        from sidenote.docx import DocxReview
+
+        return DocxReview(path)
     return OdtReview(path)

@@ -7,11 +7,13 @@ sidenote list FILE            list comments
 sidenote check FILE           report orphaned comments, nonzero on any
 sidenote changes FILE         list tracked changes
 sidenote add FILE ...         add a comment non-interactively
-sidenote export FILE          convert to docx via headless LibreOffice
+sidenote export FILE          write a docx copy
 sidenote sample FILE          write a small sample document for testing
 
-A .docx argument is converted to a sibling .odt working copy first. An
-existing working copy is reused when it is newer than the docx.
+A .docx is reviewed in place. Comments are written into the OOXML and
+every other part of the file is copied through untouched, so a document
+that came from Word goes back to Word as the same file plus comments.
+An .odt is converted to docx on export by headless LibreOffice.
 
 Markdown is reviewed in place. Comments go to a sidecar JSON file
 beside the document and the markdown itself is never modified, so it
@@ -26,7 +28,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from sidenote.engine import MARKDOWN_SUFFIXES, docx_to_odt, open_review
+from sidenote.engine import MARKDOWN_SUFFIXES, open_review
 
 SUBCOMMANDS = ("view", "list", "check", "add", "changes", "export", "sample")
 
@@ -52,10 +54,77 @@ def make_markdown_sample(path: Path) -> None:
     path.write_text(body + "\n", encoding="utf-8")
 
 
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+PKG_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+DOC_REL = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
+    "officeDocument"
+)
+DOC_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml."
+    "document.main+xml"
+)
+
+
+def make_docx_sample(path: Path) -> None:
+    """Write a minimal but real docx, no LibreOffice involved.
+
+    The first body paragraph is deliberately three runs, one of them
+    bold, because a document whose paragraphs are one run each never
+    exercises the run splitting that anchoring a comment needs.
+    """
+    import zipfile
+
+    def run(text: str, bold: bool = False) -> str:
+        props = "<w:rPr><w:b/></w:rPr>" if bold else ""
+        return f'<w:r>{props}<w:t xml:space="preserve">{text}</w:t></w:r>'
+
+    first = SAMPLE_PARAGRAPHS[0]
+    cut = first.index("folate intake")
+    bodies = [
+        run("Sample manuscript"),
+        run(first[:cut])
+        + run("folate intake", bold=True)
+        + run(first[cut + len("folate intake") :]),
+        *(run(text) for text in SAMPLE_PARAGRAPHS[1:]),
+    ]
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        f'<w:document xmlns:w="{W_NS}"><w:body>'
+        + "".join(f"<w:p>{body}</w:p>" for body in bodies)
+        + "<w:sectPr/></w:body></w:document>"
+    )
+    types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/'
+        'content-types"><Default Extension="rels" ContentType="application/'
+        'vnd.openxmlformats-package.relationships+xml"/><Default '
+        'Extension="xml" ContentType="application/xml"/><Override '
+        f'PartName="/word/document.xml" ContentType="{DOC_TYPE}"/></Types>'
+    )
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        f'<Relationships xmlns="{PKG_NS}"><Relationship Id="rId1" '
+        f'Type="{DOC_REL}" Target="word/document.xml"/></Relationships>'
+    )
+    doc_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        f'<Relationships xmlns="{PKG_NS}"></Relationships>'
+    )
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", types)
+        z.writestr("_rels/.rels", root_rels)
+        z.writestr("word/document.xml", document)
+        z.writestr("word/_rels/document.xml.rels", doc_rels)
+
+
 def make_sample(path: Path) -> None:
     """Write a sample document. Format follows the file suffix."""
     if path.suffix.lower() in MARKDOWN_SUFFIXES:
         make_markdown_sample(path)
+        return
+    if path.suffix.lower() == ".docx":
+        make_docx_sample(path)
         return
 
     from odf.opendocument import OpenDocumentText
@@ -173,11 +242,6 @@ def main(argv: list[str] | None = None) -> int:
     if not args.file.exists():
         print(f"file not found: {args.file}", file=sys.stderr)
         return 1
-
-    if args.file.suffix.lower() == ".docx":
-        odt = docx_to_odt(args.file)
-        print(f"working copy {odt}")
-        args.file = odt
 
     if args.command == "view":
         from sidenote.tui import ReviewApp

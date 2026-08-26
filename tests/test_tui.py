@@ -1407,3 +1407,68 @@ def test_reload_survives_an_unreadable_file(md_sample):
             await pilot.press("q")
 
     asyncio.run(scenario())
+
+
+@pytest.fixture
+def docx_sample(tmp_path):
+    path = tmp_path / "sample.docx"
+    make_sample(path)
+    return path
+
+
+def test_docx_comment_round_trip_in_the_tui(docx_sample):
+    """The TUI drives the docx engine through the same interface."""
+
+    async def scenario():
+        app = ReviewApp(docx_sample, author="Richard")
+        async with app.run_test(size=(100, 30)) as pilot:
+            texts = list(app.texts)
+            await pilot.press("j", "w", "w", "v", "e", "c")
+            await pilot.pause()
+            for ch in "check the wording":
+                await pilot.press(ch)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert len(app.comment_list) == 1
+            assert app.texts == texts
+            await pilot.press("u")
+            await pilot.pause()
+            assert app.comment_list == []
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert len(app.comment_list) == 1
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+    saved = open_review(docx_sample).comments()
+    assert [c.text for c in saved] == ["check the wording"]
+    assert saved[0].author == "Richard"
+
+
+def test_engine_failure_is_reported_not_fatal(docx_sample, monkeypatch):
+    """A broken document part must not take the review down with it."""
+
+    async def scenario():
+        app = ReviewApp(docx_sample, author="R")
+        async with app.run_test(size=(100, 30)) as pilot:
+            def boom(*args, **kwargs):
+                raise RuntimeError("word/comments.xml has no </w:comments>")
+
+            monkeypatch.setattr(app.review, "add_comment", boom)
+            await pilot.press("j", "v", "l", "l", "c")
+            await pilot.pause()
+            for ch in "note":
+                await pilot.press(ch)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert app.comment_list == []
+            assert app.undo_stack == []
+            assert app.is_running
+            # the review still takes keys afterwards
+            await pilot.press("j", "w")
+            await pilot.pause()
+            assert app.is_running
+            await pilot.press("q")
+
+    asyncio.run(scenario())
+    assert open_review(docx_sample).comments() == []

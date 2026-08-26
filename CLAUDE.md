@@ -1,14 +1,16 @@
 # sidenote — quick reference
 
-Terminal reviewer for ODT and Markdown files with character-level comments.
-ODT comments are native ODF inline annotations, Markdown comments live in a
-sidecar JSON file. See README.md for usage and keys.
+Terminal reviewer for docx, ODT and Markdown files with character-level
+comments. docx comments are native Word comments spliced into the OOXML,
+ODT comments are native ODF inline annotations, Markdown comments live in
+a sidecar JSON file. See README.md for usage and keys.
 
 ## Commands
 
 ```sh
 .venv/bin/python -m pytest tests/ -q      # run tests (includes soffice export)
 .venv/bin/sidenote sample /tmp/demo.odt # make a test document
+.venv/bin/sidenote sample /tmp/demo.docx # the Word equivalent
 .venv/bin/sidenote sample /tmp/demo.md  # the markdown equivalent
 .venv/bin/sidenote /tmp/demo.odt        # open the TUI
 .venv/bin/sidenote check /tmp/demo.md   # orphan report, nonzero on any
@@ -21,11 +23,12 @@ sidecar JSON file. See README.md for usage and keys.
 - Positions are `(paragraph_index, character_offset)` into the plain text
   from `para_texts()`. Annotations are zero-width in that text,
   so existing comments never shift offsets.
-- `engine.open_review()` returns `OdtReview` or `MarkdownReview` by file
-  suffix. Both expose the same interface (`para_texts`, `comments`,
-  `add_comment`, `update_comment`, `delete_comment`, `changes`, `save`,
-  `export_docx`), so no caller branches on format. Add a format by adding
-  a class with that interface, not by special-casing the TUI.
+- `engine.open_review()` returns `OdtReview`, `DocxReview` or
+  `MarkdownReview` by file suffix. All three expose the same interface
+  (`para_texts`, `comments`, `add_comment`, `update_comment`,
+  `delete_comment`, `changes`, `save`, `export_docx`), so no caller
+  branches on format. Add a format by adding a class with that
+  interface, not by special-casing the TUI.
 - `engine._insert_at` splits text nodes and `text:s` runs at the offset.
   Ranged comments insert the `office:annotation-end` marker before the
   start element so the second insertion cannot invalidate the first.
@@ -34,14 +37,89 @@ sidecar JSON file. See README.md for usage and keys.
   `AnnotationEnd(name=...)` maps correctly to `office:name`.
 - Point comments (start == end) get no `office:name` and no end marker,
   matching how LibreOffice writes them.
-- `engine.docx_to_odt` makes the sibling `.odt` working copy for docx
-  input. It reuses the working copy when its mtime is at least the
-  docx's, so comments in the copy survive reopening. `update_comment`
-  replaces the annotation's `text:p` children and refreshes `dc:date`.
-- docx export shells out to `soffice --headless --convert-to docx`.
+- `OdtReview.update_comment` replaces the annotation's `text:p` children
+  and refreshes `dc:date`.
+- ODT docx export shells out to `soffice --headless --convert-to docx`.
   LibreOffice converts named annotation ranges to Word
   `commentRangeStart`/`commentRangeEnd` and splits runs as needed. The
   test suite asserts this end to end by unzipping the produced docx.
+  `engine.docx_to_odt` still makes a sibling `.odt` working copy, but
+  nothing calls it any more. A docx now goes to `DocxReview`. Do not
+  wire the conversion back in as the default. Measured on the
+  2021-011 manuscript, the LibreOffice round trip halved
+  `document.xml`, dropped `commentsExtended`, `commentsIds`,
+  `commentsExtensible`, `people`, `footnotes`, `endnotes` and
+  `webSettings`, and turned two headers into eight headers and eight
+  footers. `DocxReview` changed two parts and left the other 34
+  byte-identical, which `test_a_real_word_file_keeps_its_parts`
+  asserts against that same file when it is present.
+- `docx.py`. One `_Walker` pass over `document.xml` bytes produces
+  paragraphs, runs, comment marks and tracked changes. Regex over XML
+  is the deliberate choice, not laziness. An ElementTree round trip
+  rewrites namespace prefixes and reorders attributes across the whole
+  part, which is exactly the byte churn the engine exists to avoid.
+  `_TAG` steps over quoted attribute values rather than scanning to
+  the first `>`, because a `>` inside an attribute value is legal.
+- Every direct child of a `w:r` is recorded in `_Run.children`, with
+  `text=None` for anything zero-width. That is what lets `_rebuild`
+  re-emit a split run from the original bytes and keep a drawing, a
+  field char or a footnote reference that happened to sit in it. Only
+  the one `w:t` actually being cut is rebuilt.
+- A comment marker is a run-level element, so it cannot go inside a
+  run. `_para_edits` therefore sorts each wanted offset into one of
+  two cases, between runs (a plain insertion) or inside one (split the
+  run around it). The `at_byte.pop(run.start, ...)` line is not
+  optional. Two comments can want the same byte, one ending at a run's
+  first character and one starting inside it, and two edits at the
+  same position would overlap.
+- Skipping. `_BLOCK_SKIP` holds property subtrees, which is what keeps
+  a `w:tab` in `w:pPr/w:tabs` out of the text and a `w:ins` marking an
+  inserted paragraph mark out of `changes()`. Drawings, pictures and
+  embedded objects are skipped as opaque run children, which is why a
+  text box's paragraphs are not document paragraphs. `w:delText` is
+  zero-width in the flat text and feeds `changes()` instead, matching
+  how ODT keeps deletions in metadata.
+- Word comment ids are integers and are the structural key, like ODT's
+  `office:name`. They are never renumbered. Markdown's positional
+  renaming is a Markdown thing, do not bring it here.
+- `_ensure_comments_part` handles three states, not two. The part can
+  be missing, present and appendable, or present as an empty
+  self-closing `<w:comments/>` root with no closing tag to append to.
+  pandoc writes that third one and it is what `manuscript_test.docx`
+  ships. `_open_empty_root` reopens it, keeping the declarations
+  because a comment body's markup resolves against them.
+  `add_comment` resolves the `</w:comments>` position before it calls
+  `_apply`, so a part it cannot append to leaves the body unmodified
+  instead of stranding markers with no comment. `_open_empty_root`
+  needs its `(?=[\s/>])` lookahead, `<w:comments` is a prefix of other
+  tag names and without it the regex happily rewrote
+  `<w:comments-but-not-really/>` into mismatched tags.
+- The comment mutations in the TUI (`action_comment`,
+  `action_edit_comment`, `action_delete_comment`, `_step`) each wrap
+  the engine call and the save in one try and report through
+  `_failed`. Textual turns an uncaught exception in a modal callback
+  into a full-screen traceback over the review, which reads as a hang
+  and loses the cursor, the selection and the search. Undo is only
+  recorded after the save returns, so a failed mutation leaves no step
+  to walk back.
+- New comments carry no `w14:paraId`, so no row is written to
+  `commentsExtended`, `commentsIds` or `commentsExtensible`. Absent is
+  the defined "unthreaded, unresolved" case and Word fills it in on
+  first reply. Writing one would mean holding a uniqueness invariant
+  across every edit for no gain. Deleting a comment does prune rows
+  keyed off the paraIds in the comment being removed, so a stale row
+  cannot outlive its comment. Confirmed in Word for the web on
+  2026-08-26, on a pandoc-produced docx whose comments part was an
+  empty self-closing root. Desktop Word is still untried.
+- Deleting a comment cuts its marker bytes out but does not re-join the
+  run they split. Deciding two adjacent runs are interchangeable is
+  Word's call on its own save, not this engine's, and the residue is
+  137 bytes on a 489 KB `document.xml`. Do not add run merging to make
+  a diff prettier.
+- `save()` builds the new zip beside the target and `os.replace`s it,
+  so an interrupted save leaves the document as it was. Untouched
+  parts are copied with their original `ZipInfo`, which keeps their
+  timestamps and compression.
 - The TUI never manipulates XML. It maps display lines back to engine
   positions (`ReviewApp.lines`) and reloads the document after every
   mutation. Keep new frontends on the same engine API.
@@ -102,7 +180,11 @@ sidecar JSON file. See README.md for usage and keys.
   orphans a comment. Orphans keep their stored anchor (`_recapture`
   skips them) so they can re-attach if the text returns.
 - `Comment.orphan` is always False for ODT, where the anchor is an
-  element in the document. Only sidecar formats can orphan.
+  element in the document. Markdown orphans when its stored context no
+  longer matches. docx orphans only in the pathological case of a
+  `w:comment` with no marker anywhere in the body, which is a broken
+  file. It is surfaced rather than dropped so the comment can be read
+  or deleted, and it is still written back on save either way.
 - Markdown comment names are positions, not identities. `save()` calls
   `_renumber()` after `_recapture()`, which sorts `_records` into
   document order and reassigns `cmt1..cmtN`, orphans last because
