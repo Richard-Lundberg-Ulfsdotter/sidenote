@@ -443,8 +443,8 @@ class DocxReview:
     """Read a docx, list and add comments, save it as a docx.
 
     Mirrors the `OdtReview` interface. There is no working copy and no
-    conversion step, so `export_docx` only writes the document out,
-    possibly to another directory.
+    conversion step. The file sidenote opened is the file a co-author
+    gets back.
     """
 
     def __init__(self, path: str | Path):
@@ -847,12 +847,6 @@ class DocxReview:
             if temp.exists():
                 temp.unlink()
         return target
-
-    def export_docx(self, out_dir: str | Path | None = None) -> Path:
-        """Write the document out. It is already a docx, so this saves."""
-        out_dir = Path(out_dir) if out_dir else self.path.parent
-        out_dir.mkdir(parents=True, exist_ok=True)
-        return self.save(out_dir / self.path.name)
 
 
 def _open_empty_root(data: bytes) -> bytes:

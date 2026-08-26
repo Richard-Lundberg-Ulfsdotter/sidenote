@@ -320,11 +320,8 @@ def test_offsets_outside_the_paragraph_are_rejected(doc):
         review.add_comment((99, 0), (99, 1), "no such paragraph")
 
 
-def test_no_tracked_changes_and_no_docx_export(doc):
-    review = MarkdownReview(doc)
-    assert review.changes() == []
-    with pytest.raises(RuntimeError):
-        review.export_docx()
+def test_no_tracked_changes(doc):
+    assert MarkdownReview(doc).changes() == []
 
 
 def test_unreadable_sidecar_is_reported(doc):

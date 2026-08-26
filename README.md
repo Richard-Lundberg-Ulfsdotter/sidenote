@@ -12,8 +12,8 @@ in either direction, so the file a co-author gets back is the file they
 sent plus the comments.
 
 A LibreOffice document is commented as native ODF inline annotations
-(`office:annotation` + `office:annotation-end`). Export to docx goes
-through headless LibreOffice.
+(`office:annotation` + `office:annotation-end`), written back into the
+same ODT.
 
 Markdown works differently. The file is left exactly as it is and comments
 go to a sidecar JSON file beside it, so the document stays a plain build
@@ -38,10 +38,11 @@ python -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-Needs Python 3.10+. LibreOffice (`soffice`) on PATH is needed only to
-export an ODT to docx. Reviewing a docx does not use it. Everything else
-is pure Python (odfpy + Textual). Developed on Linux, should work
-anywhere Textual runs.
+Needs Python 3.10+ and nothing else. Pure Python, odfpy and Textual.
+Every format is read and written directly, so there is no LibreOffice
+and no conversion step anywhere. The only thing that shells out is `o`
+in the reference overlay, which hands a PDF to `xdg-open`. Developed on
+Linux, should work anywhere Textual runs.
 
 ## Usage
 
@@ -59,7 +60,6 @@ sidenote check manuscript.md         # report orphaned comments
 sidenote changes manuscript.odt      # print tracked changes
 sidenote add manuscript.odt --para 2 --start 10 --end 24 --text "..."
 sidenote add manuscript.odt --para 2 --start 10 --end-para 3 --end 5 --text "..."
-sidenote export manuscript.odt       # write manuscript.docx next to it
 sidenote sample demo.odt             # generate a test document
 sidenote sample demo.docx            # the same text as a Word document
 sidenote sample demo.md              # the same text as markdown
@@ -89,9 +89,9 @@ cross a formatting boundary or run from one paragraph into the next. A run
 is split only where a marker has to go, and its run properties, images and
 field codes are carried into both halves.
 
-Every comment is already in the file by the time you see it on screen, so
-there is nothing to export. `sidenote export --outdir` writes a copy
-somewhere else if you want one, and `X` in the TUI is a plain re-save.
+Every comment is in the file by the time you see it on screen, so there
+is nothing to export and no step to remember. Close the review and send
+the file.
 
 Tracked changes in a docx are read the same way as in an ODT, `w:ins` for
 insertions and `w:del` for deletions, and shown read-only, inline and in
@@ -137,9 +137,6 @@ orphaned, which makes it usable as a pre-commit hook.
 ```sh
 sidenote check manuscript.md || echo "a comment lost its anchor"
 ```
-
-There is no docx export for markdown. The comments are for reading in the
-TUI and in `sidenote list`.
 
 Markdown files open with the markup styled, headings in colour, emphasis
 in italics, code and citation keys set apart, and the markers themselves
@@ -202,7 +199,6 @@ anchors stay as they were until the next comment change.
 | `tab`          | switch focus between document and sidebar     |
 | `ctrl+←/→`     | move the divider, resizing panel and document |
 | `R`            | re-read the file after editing it elsewhere   |
-| `X`            | export to docx (background, not for markdown) |
 | `?`            | help (scrolls with `j`/`k`, escape closes)    |
 | `escape`       | back to document / leave visual / clear search|
 | `q`            | quit                                          |
@@ -367,8 +363,7 @@ kitty -o font_family="Aptos Mono" sidenote paper.md --theme word
 ```
 sidenote/
   engine.py   ODT model. Load, plain-text paragraphs, comment anchoring
-              at (paragraph, character offset), edit/delete, save,
-              docx export via headless LibreOffice.
+              at (paragraph, character offset), edit/delete, save.
               `open_review()` picks the engine that fits the file.
   docx.py     Word model, same interface. Walks document.xml for
               paragraphs, runs and markers, splices comment markers into
@@ -389,12 +384,11 @@ sidenote/
   refcheck.py Reads a manuscript's reference-check.md, indexes its
               table rows by citation key, and locates the full-text
               PDFs. Optional, absent for most documents.
-  cli.py      Entry point. TUI plus list/check/add/changes/export/sample
+  cli.py      Entry point. TUI plus list/check/add/changes/sample
               subcommands, and the sample document in all three formats.
 tests/
-  test_engine.py   ODT round-trips, tracked-change parsing, and a
-                   soffice export check that the comment survives as a
-                   Word comment.
+  test_engine.py   ODT round-trips and tracked-change parsing, including
+                   that annotations stay zero-width in the text.
   test_docx.py     Word round-trips, run splitting around images,
                    fields, hyperlinks and table cells, and the check
                    that only the two parts change.
@@ -442,13 +436,14 @@ children in docx.
   resolving it in Word works and adds the paraId there.
 - The docx engine is verified against Word for the web, LibreOffice and
   its own test suite. Desktop Word has not been tried.
-- Exporting an ODT to docx goes through LibreOffice, so complex Word
-  layout may shift on that path. Comments and text survive. Reviewing a
-  docx does not use that path at all.
 - Markdown is styled, not rendered. The markers are dimmed rather than
   hidden, because offsets have to keep matching the file you edit, which
   is what anchoring needs.
-- Markdown comments cannot be exported to docx, and a markdown comment
+- Nothing converts between formats. An ODT is reviewed and saved as an
+  ODT. Handing one to a Word user is `soffice --headless --convert-to
+  docx paper.odt`, or Save As in LibreOffice, and the comments survive
+  either way as Word comment ranges.
+- Markdown comments live only in the sidecar, and a markdown comment
   whose anchor text and surrounding wording are both rewritten is marked
   orphaned rather than relocated.
 - The reference overlay reads a hand-maintained check file, not the
@@ -464,9 +459,8 @@ children in docx.
 
 The suite covers all three engines, unzipping the docx it produces to
 check the comment markers pair up and that no other part moved, and
-drives the TUI headlessly through Textual's pilot. The one test needing
-LibreOffice is the ODT export, skipped when `soffice` is missing. CI runs
-it on Python 3.10 and 3.14.
+drives the TUI headlessly through Textual's pilot. Nothing in it needs
+LibreOffice. CI runs it on Python 3.10 and 3.14.
 
 ## License
 

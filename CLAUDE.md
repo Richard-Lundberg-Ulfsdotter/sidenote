@@ -8,7 +8,7 @@ a sidecar JSON file. See README.md for usage and keys.
 ## Commands
 
 ```sh
-.venv/bin/python -m pytest tests/ -q      # run tests (includes soffice export)
+.venv/bin/python -m pytest tests/ -q      # run tests (no LibreOffice needed)
 .venv/bin/sidenote sample /tmp/demo.odt # make a test document
 .venv/bin/sidenote sample /tmp/demo.docx # the Word equivalent
 .venv/bin/sidenote sample /tmp/demo.md  # the markdown equivalent
@@ -26,8 +26,8 @@ a sidecar JSON file. See README.md for usage and keys.
 - `engine.open_review()` returns `OdtReview`, `DocxReview` or
   `MarkdownReview` by file suffix. All three expose the same interface
   (`para_texts`, `comments`, `add_comment`, `update_comment`,
-  `delete_comment`, `changes`, `save`, `export_docx`), so no caller
-  branches on format. Add a format by adding a class with that
+  `delete_comment`, `changes`, `save`), so no caller branches on
+  format. Add a format by adding a class with that
   interface, not by special-casing the TUI.
 - `engine._insert_at` splits text nodes and `text:s` runs at the offset.
   Ranged comments insert the `office:annotation-end` marker before the
@@ -39,20 +39,18 @@ a sidecar JSON file. See README.md for usage and keys.
   matching how LibreOffice writes them.
 - `OdtReview.update_comment` replaces the annotation's `text:p` children
   and refreshes `dc:date`.
-- ODT docx export shells out to `soffice --headless --convert-to docx`.
-  LibreOffice converts named annotation ranges to Word
-  `commentRangeStart`/`commentRangeEnd` and splits runs as needed. The
-  test suite asserts this end to end by unzipping the produced docx.
-  `engine.docx_to_odt` still makes a sibling `.odt` working copy, but
-  nothing calls it any more. A docx now goes to `DocxReview`. Do not
-  wire the conversion back in as the default. Measured on the
-  2021-011 manuscript, the LibreOffice round trip halved
-  `document.xml`, dropped `commentsExtended`, `commentsIds`,
-  `commentsExtensible`, `people`, `footnotes`, `endnotes` and
-  `webSettings`, and turned two headers into eight headers and eight
-  footers. `DocxReview` changed two parts and left the other 34
-  byte-identical, which `test_a_real_word_file_keeps_its_parts`
-  asserts against that same file when it is present.
+- Nothing converts between formats and nothing shells out. `soffice`,
+  `_soffice_convert`, `docx_to_odt`, `export_docx` and the `X` key are
+  all gone, removed once `DocxReview` landed and the ODT round trip had
+  no reason left to exist. Do not bring any of it back. Measured on the
+  2021-011 manuscript, that round trip halved `document.xml`, dropped
+  `commentsExtended`, `commentsIds`, `commentsExtensible`, `people`,
+  `footnotes`, `endnotes` and `webSettings`, and turned two headers into
+  eight headers and eight footers. `DocxReview` changes two parts and
+  leaves the other 34 byte-identical, which
+  `test_a_real_word_file_keeps_its_parts` asserts against that same file
+  when it is present. Handing an ODT to a Word user is LibreOffice's
+  job, not sidenote's.
 - `docx.py`. One `_Walker` pass over `document.xml` bytes produces
   paragraphs, runs, comment marks and tracked changes. Regex over XML
   is the deliberate choice, not laziness. An ElementTree round trip
@@ -224,8 +222,8 @@ a sidecar JSON file. See README.md for usage and keys.
   400-paragraph document, `_repaint` is ~0.2 ms.
 - Key handling. Movement lives in `ReviewApp.on_key` (guarded when a
   modal is up or the document pane is not focused, ends with
-  `event.stop()`), actions live in BINDINGS. `e` is vim word-end, docx
-  export is `X`. The display toggles `D` and `M` sit in `on_key`
+  `event.stop()`), actions live in BINDINGS. `e` is vim word-end. The
+  display toggles `D` and `M` sit in `on_key`
   rather than in BINDINGS on purpose. A shown binding widens the
   footer, and the footer is in `docs/screenshot.svg` at the narrowest
   width that still fits it. Literal `[` in help text must be escaped as `\\[`,
@@ -328,11 +326,12 @@ a sidecar JSON file. See README.md for usage and keys.
   rule, sets the terminal group to `translate(0, 0)`, and measures the
   content box off the SVG itself (width from the per-line clip rects,
   height from the painted cell rects, which unlike the clip rects
-  include the footer row). 1586x734 for 30 rows at 130 columns. The
+  include the footer row). 1464x734 for 30 rows at 120 columns. The
   width tracks the footer, which stopped fitting at 110 when `r` was
-  added and at 120 when `u` was, and a truncated footer in the picture
-  looks broken. Check the footer after any binding change and rerun
-  the tool, 130 is the current minimum that still shows `? help`.
+  added and at 120 when `u` was, went to 130 and came back to 120 when
+  the docx export key went, and a truncated footer in the picture looks
+  broken. Check the footer after any binding change and rerun the tool,
+  120 is the current minimum that still shows `? help`.
 - Comment style. Document unevenly. A hard constraint or a decision
   that looks like a bug earns a paragraph, a helper whose name says
   what it does earns nothing. Do not add a docstring to every

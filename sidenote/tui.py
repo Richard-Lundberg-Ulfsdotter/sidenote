@@ -142,7 +142,6 @@ HELP_TEXT = """\
 
 [b]Other[/b]
   R              re-read the file after editing it elsewhere
-  X              export to docx (not for markdown)
   escape         leave visual mode / clear search
   q              quit
 
@@ -619,7 +618,7 @@ class DocumentView(ScrollView):
 
 
 class ReviewApp(App):
-    """sidenote. Vim keys, v selects, c comments, X exports docx."""
+    """sidenote. Vim keys, v selects, c comments, m edits, d deletes."""
 
     TITLE = "sidenote"
 
@@ -673,7 +672,6 @@ class ReviewApp(App):
         Binding("s", "toggle_sidebar", "comments"),
         Binding("S", "toggle_changes", "changes"),
         Binding("r", "reference", "reference"),
-        Binding("X", "export", "docx"),
         Binding("R", "reload", show=False),
         Binding("question_mark", "help", "help"),
         Binding("escape", "clear_transient", show=False),
@@ -1975,16 +1973,3 @@ class ReviewApp(App):
             self.notify(f"cannot read {path.name}. {exc}", severity="error")
             return None
 
-    def action_export(self) -> None:
-        self.notify("exporting to docx...")
-
-        def do_export() -> None:
-            try:
-                target = self.review.export_docx()
-                self.call_from_thread(self.notify, f"wrote {target}")
-            except Exception as exc:
-                self.call_from_thread(
-                    self.notify, f"export failed. {exc}", severity="error"
-                )
-
-        self.run_worker(do_export, thread=True)

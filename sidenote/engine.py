@@ -3,8 +3,6 @@
 Loads an ODT file, exposes its paragraphs as plain text, and anchors
 comments at exact character offsets using ODF's inline annotation model
 (office:annotation paired with office:annotation-end for ranged comments).
-Export to docx is delegated to headless LibreOffice, which maps named
-annotation ranges to Word commentRangeStart/commentRangeEnd.
 
 Positions are (paragraph_index, character_offset) pairs. Offsets index
 into the plain text returned by para_texts(), where existing annotation
@@ -16,7 +14,6 @@ from __future__ import annotations
 
 import getpass
 import os
-import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -53,53 +50,6 @@ MARK_QNAMES = (
 )
 
 Pos = tuple[int, int]
-
-
-def _soffice_convert(source: Path, to: str, out_dir: Path) -> Path:
-    result = subprocess.run(
-        [
-            "soffice",
-            "--headless",
-            "--convert-to",
-            to,
-            "--outdir",
-            str(out_dir),
-            str(source),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    target = out_dir / (source.stem + f".{to}")
-    if result.returncode != 0 or not target.exists():
-        raise RuntimeError(
-            f"soffice conversion failed. {result.stderr.strip() or result.stdout.strip()}"
-        )
-    return target
-
-
-def docx_to_odt(path: str | Path, force: bool = False) -> Path:
-    """Convert a docx to a sibling ODT working copy via headless LibreOffice.
-
-    An existing sibling .odt is reused when it is at least as new as the
-    docx, so comments already added to the working copy are not lost on
-    reopening the same docx.
-
-    Not the docx path any more. `open_review` sends a docx to
-    `DocxReview`, which edits the OOXML in place and leaves the rest of
-    the file alone. This stays for the case where the ODT model is
-    genuinely wanted, and it is still a lossy conversion in both
-    directions.
-    """
-    path = Path(path)
-    target = path.with_suffix(".odt")
-    if (
-        target.exists()
-        and not force
-        and target.stat().st_mtime >= path.stat().st_mtime
-    ):
-        return target
-    return _soffice_convert(path, "odt", path.parent)
 
 
 @dataclass
@@ -257,7 +207,7 @@ def _insert_at(paragraph: Element, offset: int, new_node: Element) -> None:
 
 
 class OdtReview:
-    """Read an ODT file, list and add comments, save, export to docx."""
+    """Read an ODT file, list and add comments, save."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -544,11 +494,6 @@ class OdtReview:
         target = Path(path) if path else self.path
         self.doc.save(str(target))
         return target
-
-    def export_docx(self, out_dir: str | Path | None = None) -> Path:
-        """Convert to docx with headless LibreOffice, return the new path."""
-        out_dir = Path(out_dir) if out_dir else self.path.parent
-        return _soffice_convert(self.path, "docx", out_dir)
 
 
 MARKDOWN_SUFFIXES = frozenset(

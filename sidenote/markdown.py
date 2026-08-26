@@ -387,7 +387,7 @@ class MarkdownReview:
     """Read a Markdown file, list and add comments, save the sidecar.
 
     Mirrors the `OdtReview` interface. Tracked changes do not exist for
-    Markdown and `changes()` is always empty. There is no docx export.
+    Markdown and `changes()` is always empty.
     """
 
     def __init__(self, path: str | Path):
@@ -593,9 +593,3 @@ class MarkdownReview:
         for n, record in enumerate(records, 1):
             record.name = f"cmt{n}"
         self._records = records
-
-    def export_docx(self, out_dir: str | Path | None = None) -> Path:
-        raise RuntimeError(
-            "markdown review has no docx export. "
-            "Comments live in the sidecar file next to the document."
-        )

@@ -1,15 +1,8 @@
 """Engine tests. Round-trip comments through a real ODT file on disk."""
 
-import shutil
-import zipfile
-
 import pytest
 from sidenote.cli import make_sample
-from sidenote.engine import OdtReview, docx_to_odt
-
-needs_soffice = pytest.mark.skipif(
-    shutil.which("soffice") is None, reason="LibreOffice not installed"
-)
+from sidenote.engine import OdtReview
 
 
 @pytest.fixture
@@ -117,48 +110,6 @@ def test_update_comment(sample):
     assert final.text == "revised\nwith a second line"
     assert final.author == "R"
     assert (final.start, final.end) == ((1, 9), (1, 22))
-
-
-@needs_soffice
-def test_docx_to_odt_round_trip(sample, tmp_path):
-    review = OdtReview(sample)
-    texts = review.para_texts()
-    review.add_comment((1, 9), (1, 22), "survives round trip", author="R")
-    review.save()
-    docx = review.export_docx(tmp_path / "roundtrip")
-
-    odt = docx_to_odt(docx)
-    assert odt == docx.with_suffix(".odt")
-    back = OdtReview(odt)
-    assert back.para_texts() == texts
-    comments = back.comments()
-    assert len(comments) == 1
-    assert comments[0].text == "survives round trip"
-    assert (comments[0].start, comments[0].end) == ((1, 9), (1, 22))
-
-    # a newer working copy is reused, not clobbered
-    back.add_comment((2, 0), (2, 4), "second", author="R")
-    back.save()
-    assert docx_to_odt(docx) == odt
-    assert len(OdtReview(odt).comments()) == 2
-
-
-@needs_soffice
-def test_docx_export_carries_comment(sample, tmp_path):
-    review = OdtReview(sample)
-    texts = review.para_texts()
-    start = texts[1].index("cohort studies")
-    review.add_comment(
-        (1, start), (1, start + len("cohort studies")), "cite the reviews", author="R"
-    )
-    review.save()
-    docx = OdtReview(sample).export_docx(tmp_path / "out")
-    with zipfile.ZipFile(docx) as z:
-        comments_xml = z.read("word/comments.xml").decode("utf-8")
-        document_xml = z.read("word/document.xml").decode("utf-8")
-    assert "cite the reviews" in comments_xml
-    assert "commentRangeStart" in document_xml
-    assert "commentRangeEnd" in document_xml
 
 
 def test_tracked_changes_not_rendered(tmp_path):

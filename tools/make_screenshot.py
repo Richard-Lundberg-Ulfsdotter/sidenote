@@ -27,10 +27,10 @@ from sidenote.tui import ReviewApp
 
 OUT = Path(__file__).resolve().parent.parent / "docs" / "screenshot.svg"
 
-# 130x30 cells, the narrowest that still shows the whole footer, which
-# grew again when u was added. The document pane keeps 130 -
-# PANEL_WIDTH columns.
-SIZE = (130, 30)
+# 120x30 cells, the narrowest that still shows the whole footer. It grew
+# to 130 when u was added and came back to 120 when the docx export key
+# went. The document pane keeps 120 - PANEL_WIDTH columns.
+SIZE = (120, 30)
 # fixed so regenerating does not churn the dates in the diff
 DATE = "2026-07-07T09:14:00"
 # (paragraph, start, end, author, text) for the two sidebar entries

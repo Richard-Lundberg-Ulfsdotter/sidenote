@@ -617,13 +617,13 @@ def test_delete_prunes_the_word_side_tables(tmp_path):
     assert DocxReview(path).para_texts() == ["Hello"]
 
 
-def test_export_writes_a_copy(sample, tmp_path):
+def test_save_to_another_path(sample, tmp_path):
+    """save(path) writes a copy and leaves the opened file alone."""
     review = DocxReview(sample)
     review.add_comment((1, 9), (1, 22), "carried over", author="R")
-    target = review.export_docx(tmp_path / "out")
-    assert target == tmp_path / "out" / "sample.docx"
+    target = review.save(tmp_path / "copy.docx")
+    assert target == tmp_path / "copy.docx"
     assert DocxReview(target).comments()[0].text == "carried over"
-    # the export does not write back to the original
     assert DocxReview(sample).comments() == []
 
 

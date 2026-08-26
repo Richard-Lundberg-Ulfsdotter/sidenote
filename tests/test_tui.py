@@ -1,7 +1,6 @@
 """TUI smoke tests. Drives the app headlessly with Textual's pilot."""
 
 import asyncio
-import shutil
 
 import pytest
 from textual.widgets import Static
@@ -23,11 +22,6 @@ from sidenote.tui import (
     word_object,
     wrap_offsets,
 )
-
-needs_soffice = pytest.mark.skipif(
-    shutil.which("soffice") is None, reason="LibreOffice not installed"
-)
-
 
 @pytest.fixture
 def sample(tmp_path):
@@ -529,19 +523,6 @@ def test_star_word_boundaries(sample):
             await pilot.press("q")
 
     asyncio.run(scenario())
-
-
-@needs_soffice
-def test_export_binding(sample, tmp_path):
-    async def scenario():
-        app = ReviewApp(sample)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.press("X")
-            await app.workers.wait_for_complete()
-            await pilot.press("q")
-
-    asyncio.run(scenario())
-    assert sample.with_suffix(".docx").exists()
 
 
 def test_help_screen(sample):
@@ -1057,12 +1038,6 @@ def test_markdown_orphan_shows_in_the_sidebar(md_sample):
             await pilot.press("q")
 
     asyncio.run(scenario())
-
-
-def test_markdown_export_fails_cleanly(md_sample):
-    review = open_review(md_sample)
-    with pytest.raises(RuntimeError, match="no docx export"):
-        review.export_docx()
 
 
 REFERENCE_CHECK = """\

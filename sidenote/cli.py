@@ -7,13 +7,11 @@ sidenote list FILE            list comments
 sidenote check FILE           report orphaned comments, nonzero on any
 sidenote changes FILE         list tracked changes
 sidenote add FILE ...         add a comment non-interactively
-sidenote export FILE          write a docx copy
 sidenote sample FILE          write a small sample document for testing
 
 A .docx is reviewed in place. Comments are written into the OOXML and
 every other part of the file is copied through untouched, so a document
 that came from Word goes back to Word as the same file plus comments.
-An .odt is converted to docx on export by headless LibreOffice.
 
 Markdown is reviewed in place. Comments go to a sidecar JSON file
 beside the document and the markdown itself is never modified, so it
@@ -30,7 +28,7 @@ from pathlib import Path
 
 from sidenote.engine import MARKDOWN_SUFFIXES, open_review
 
-SUBCOMMANDS = ("view", "list", "check", "add", "changes", "export", "sample")
+SUBCOMMANDS = ("view", "list", "check", "add", "changes", "sample")
 
 
 SAMPLE_PARAGRAPHS = (
@@ -225,10 +223,6 @@ def main(argv: list[str] | None = None) -> int:
     p_changes = sub.add_parser("changes", help="list tracked changes")
     p_changes.add_argument("file", type=Path)
 
-    p_export = sub.add_parser("export", help="convert to docx")
-    p_export.add_argument("file", type=Path)
-    p_export.add_argument("--outdir", type=Path)
-
     p_sample = sub.add_parser("sample", help="write a sample document")
     p_sample.add_argument("file", type=Path)
 
@@ -282,13 +276,6 @@ def main(argv: list[str] | None = None) -> int:
         review.save()
         kind = "ranged" if c.end > c.start else "point"
         print(f"added {kind} comment by {c.author}")
-    elif args.command == "export":
-        try:
-            target = review.export_docx(args.outdir)
-        except RuntimeError as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        print(f"wrote {target}")
     return 0
 
 
