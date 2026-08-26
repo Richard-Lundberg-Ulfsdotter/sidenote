@@ -1,8 +1,8 @@
 """Engine tests. Round-trip comments through a real ODT file on disk."""
 
 import pytest
-from sidenote.cli import make_sample
-from sidenote.engine import OdtReview
+from sidenote.cli import main, make_sample
+from sidenote.engine import OdtReview, author_file, default_author
 
 
 @pytest.fixture
@@ -178,3 +178,47 @@ def test_changes_do_not_disturb_comments(tracked_sample):
     ins = [ch for ch in reloaded.changes() if ch.kind == "insertion"][0]
     assert (ins.start, ins.end) == ((0, 6), (0, 15))
     assert reloaded.para_texts()[0] == "Hello new words world"
+
+
+def test_default_author_prefers_the_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIDENOTE_AUTHOR", "Anna Nilsson")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert default_author() == "Anna Nilsson"
+
+
+def test_default_author_falls_back_to_the_config_file(tmp_path, monkeypatch):
+    """The case the environment variable misses, a non-interactive shell."""
+    monkeypatch.delenv("SIDENOTE_AUTHOR", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    stored = author_file()
+    stored.parent.mkdir(parents=True)
+    stored.write_text("Richard Lundberg-Ulfsdotter\n", encoding="utf-8")
+    assert default_author() == "Richard Lundberg-Ulfsdotter"
+
+
+def test_default_author_without_either(tmp_path, monkeypatch):
+    monkeypatch.delenv("SIDENOTE_AUTHOR", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert default_author()
+
+
+def test_comment_is_signed_with_the_stored_author(sample, tmp_path, monkeypatch):
+    monkeypatch.delenv("SIDENOTE_AUTHOR", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    stored = author_file()
+    stored.parent.mkdir(parents=True)
+    stored.write_text("Richard Lundberg-Ulfsdotter\n", encoding="utf-8")
+
+    review = OdtReview(sample)
+    review.add_comment((1, 0), (1, 8), "note")
+    review.save()
+    assert OdtReview(sample).comments()[0].author == "Richard Lundberg-Ulfsdotter"
+
+
+def test_author_subcommand_round_trip(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("SIDENOTE_AUTHOR", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert main(["author", "  Richard Lundberg-Ulfsdotter  "]) == 0
+    capsys.readouterr()
+    assert main(["author"]) == 0
+    assert capsys.readouterr().out.strip() == "Richard Lundberg-Ulfsdotter"

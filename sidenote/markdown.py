@@ -18,7 +18,6 @@ vanished leaves the comment orphaned rather than dropping it.
 
 from __future__ import annotations
 
-import getpass
 import hashlib
 import json
 import os
@@ -27,7 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from sidenote.engine import Comment, Pos, TrackedChange
+from sidenote.engine import Comment, Pos, TrackedChange, default_author
 
 SIDECAR_VERSION = 1
 
@@ -490,7 +489,7 @@ class MarkdownReview:
                     f"offset {off} outside paragraph {para} "
                     f"of length {len(self._texts[para])}"
                 )
-        author = author or os.environ.get("SIDENOTE_AUTHOR") or getpass.getuser()
+        author = author or default_author()
         date = date or datetime.now().isoformat(timespec="seconds")
         ranged = end > start
         record = _Record(

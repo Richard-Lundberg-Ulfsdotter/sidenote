@@ -177,6 +177,17 @@ a sidecar JSON file. See README.md for usage and keys.
   `test_comment_follows_a_replaced_phrase`. Only losing both sides
   orphans a comment. Orphans keep their stored anchor (`_recapture`
   skips them) so they can re-attach if the text returns.
+- `engine.default_author()` is the one place a comment's author comes
+  from, used by all three engines. `$SIDENOTE_AUTHOR`, then
+  `~/.config/sidenote/author`, then the GECOS name when it has a space
+  in it, then the login name. The file is there because an exported
+  variable is missing from a desktop launcher, a cron job and a
+  restored tmux pane, and the fallback then signs a document with a
+  bare login name. That is how `richard` rather than the full name
+  ended up on a comment in `manuscript_test.docx` on 2026-08-26. The
+  env var stays ahead of the file so a one-off shell can still
+  override, and `sidenote author` writes the file rather than asking
+  anyone to mkdir a config directory.
 - `Comment.orphan` is always False for ODT, where the anchor is an
   element in the document. Markdown orphans when its stored context no
   longer matches. docx orphans only in the pathological case of a

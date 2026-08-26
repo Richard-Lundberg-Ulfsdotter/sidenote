@@ -23,7 +23,6 @@ offsets around it.
 
 from __future__ import annotations
 
-import getpass
 import os
 import re
 import zipfile
@@ -31,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from sidenote.engine import Comment, Pos, TrackedChange
+from sidenote.engine import Comment, Pos, TrackedChange, default_author
 
 DOCUMENT_PART = "word/document.xml"
 COMMENTS_PART = "word/comments.xml"
@@ -549,7 +548,7 @@ class DocxReview:
                     f"offset {off} outside paragraph {para_idx} "
                     f"of length {len(texts[para_idx])}"
                 )
-        author = author or os.environ.get("SIDENOTE_AUTHOR") or getpass.getuser()
+        author = author or default_author()
         date = date or datetime.now().isoformat(timespec="seconds")
         self._ensure_comments_part()
         # resolved before the body is touched, so a comments part this

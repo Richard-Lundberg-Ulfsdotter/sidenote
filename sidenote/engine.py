@@ -52,6 +52,49 @@ MARK_QNAMES = (
 Pos = tuple[int, int]
 
 
+def author_file() -> Path:
+    root = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
+    return Path(root).expanduser() / "sidenote" / "author"
+
+
+def _real_name() -> str:
+    """The account's full name, when the system knows one.
+
+    The GECOS field is a comma-separated record whose first field is
+    the name. Plenty of systems leave it as the login name, which is
+    no better than what we already have, so it only counts when it
+    looks like a person.
+    """
+    try:
+        import pwd
+
+        name = pwd.getpwuid(os.getuid()).pw_gecos.split(",")[0].strip()
+    except Exception:
+        return ""
+    return name if " " in name else ""
+
+
+def default_author() -> str:
+    """Who a comment is from when the caller does not say.
+
+    `$SIDENOTE_AUTHOR` first, then `~/.config/sidenote/author`, then
+    whatever the account calls itself. The config file exists because
+    an environment variable set in a shell profile is absent from a
+    desktop launcher, a cron job and a restored tmux pane, and a
+    comment signed with a bare login name is the kind of thing you
+    only notice after sending the document. LibreOffice keeps the name
+    in its own config for the same reason.
+    """
+    env = os.environ.get("SIDENOTE_AUTHOR", "").strip()
+    if env:
+        return env
+    try:
+        stored = author_file().read_text(encoding="utf-8").strip()
+    except OSError:
+        stored = ""
+    return stored or _real_name() or getpass.getuser()
+
+
 @dataclass
 class Comment:
     """A comment anchored in the document.
@@ -413,8 +456,9 @@ class OdtReview:
 
         start == end creates a point comment. Ranged comments get an
         office:name so LibreOffice exports them as Word comment ranges.
-        date defaults to now and is passed explicitly only when putting
-        a deleted comment back, which must not restamp it.
+        author defaults to `default_author()`. date defaults to now and
+        is passed explicitly only when putting a deleted comment back,
+        which must not restamp it.
         """
         if end < start:
             start, end = end, start
@@ -428,7 +472,7 @@ class OdtReview:
                     f"offset {off} outside paragraph {para_idx} "
                     f"of length {len(texts[para_idx])}"
                 )
-        author = author or os.environ.get("SIDENOTE_AUTHOR") or getpass.getuser()
+        author = author or default_author()
         date = date or datetime.now().isoformat(timespec="seconds")
         ranged = end > start
         name = self._unique_name() if ranged else None

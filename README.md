@@ -63,12 +63,27 @@ sidenote add manuscript.odt --para 2 --start 10 --end-para 3 --end 5 --text "...
 sidenote sample demo.odt             # generate a test document
 sidenote sample demo.docx            # the same text as a Word document
 sidenote sample demo.md              # the same text as markdown
+sidenote author "Richard Lundberg-Ulfsdotter"   # sign comments with this
 ```
 
-The author name defaults to `$SIDENOTE_AUTHOR`, then the login name.
 `list` and `changes` read any of the three formats. `check` is about
 sidecar anchors, so on a docx or an ODT it says the anchors are in the
 document and exits zero.
+
+### Who a comment is from
+
+Comments carry an author name, and a co-author reading them in Word sees
+it. `sidenote author "Your Name"` stores it in
+`~/.config/sidenote/author`, `sidenote author` with no argument prints
+what would be used right now.
+
+`--author` overrides it for one invocation and `$SIDENOTE_AUTHOR`
+overrides it everywhere it is set. Prefer the stored file to the
+environment variable. A variable exported from `.bashrc` or `.zshrc` is
+absent from a desktop launcher, a cron job and a restored tmux pane, and
+sidenote then falls back to the bare login name, which is the sort of
+thing you notice after the document has gone out. The file is read the
+same way whatever started the process.
 
 ### docx workflow
 

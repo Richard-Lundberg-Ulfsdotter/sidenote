@@ -8,6 +8,7 @@ sidenote check FILE           report orphaned comments, nonzero on any
 sidenote changes FILE         list tracked changes
 sidenote add FILE ...         add a comment non-interactively
 sidenote sample FILE          write a small sample document for testing
+sidenote author [NAME]        show or set the name comments are signed with
 
 A .docx is reviewed in place. Comments are written into the OOXML and
 every other part of the file is copied through untouched, so a document
@@ -23,12 +24,20 @@ anchor text has been rewritten away.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
-from sidenote.engine import MARKDOWN_SUFFIXES, open_review
+from sidenote.engine import (
+    MARKDOWN_SUFFIXES,
+    author_file,
+    default_author,
+    open_review,
+)
 
-SUBCOMMANDS = ("view", "list", "check", "add", "changes", "sample")
+SUBCOMMANDS = (
+    "view", "list", "check", "add", "changes", "sample", "author",
+)
 
 
 SAMPLE_PARAGRAPHS = (
@@ -164,6 +173,30 @@ def cmd_list(review) -> None:
         print(f"    {c.text}")
 
 
+def cmd_author(name: str | None) -> int:
+    """Show the name comments are signed with, or store a new one.
+
+    Stored rather than exported because a shell profile is not read by
+    a desktop launcher or a restored tmux pane, and the first sign that
+    the name was wrong is usually a document already sent.
+    """
+    if name is None:
+        print(default_author())
+        return 0
+    target = author_file()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(name.strip() + "\n", encoding="utf-8")
+    print(f"comments will be signed {name.strip()!r} ({target})")
+    env = os.environ.get("SIDENOTE_AUTHOR", "").strip()
+    if env and env != name.strip():
+        print(
+            f"note: $SIDENOTE_AUTHOR is set to {env!r} and wins over this "
+            "file in any shell that has it",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def cmd_check(review) -> int:
     """Report anchor health. Nonzero exit when a comment is orphaned."""
     status = getattr(review, "status", None)
@@ -226,7 +259,13 @@ def main(argv: list[str] | None = None) -> int:
     p_sample = sub.add_parser("sample", help="write a sample document")
     p_sample.add_argument("file", type=Path)
 
+    p_author = sub.add_parser("author", help="show or set the comment author")
+    p_author.add_argument("name", nargs="?", help="the name to sign comments with")
+
     args = parser.parse_args(argv)
+
+    if args.command == "author":
+        return cmd_author(args.name)
 
     if args.command == "sample":
         make_sample(args.file)
